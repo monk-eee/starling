@@ -1,0 +1,23 @@
+run:
+  name: Local smoke test
+  duration: 30s
+  seed: 42
+
+target:
+  url: http://127.0.0.1:8081/mcp
+  protocol: "2025-11-25"
+
+load:
+  users: 2
+  threads: 2
+  wait: 250ms
+  timeout: 3s
+
+tasks:
+  - tool: echo
+    weight: 3
+    arguments: { text: hello }
+    assert_exists: /content/0/text
+  - tool: status
+    weight: 1
+    assert_exists: /content/0

@@ -1,0 +1,287 @@
+use std::{fs, path::Path, process::Stdio, time::Duration};
+
+use serde_json::Value;
+use tempfile::{TempDir, tempdir};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::{Child, Command},
+    time::timeout,
+};
+
+const BIN: &str = env!("CARGO_BIN_EXE_starling");
+const SAMPLE: &str = include_str!("../examples/local.toml");
+
+async fn fixture() -> (Child, String) {
+    let mut child = Command::new(BIN)
+        .args(["fixture", "--listen", "127.0.0.1:0"])
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
+    let line = timeout(Duration::from_secs(8), reader.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    (child, line.strip_prefix("Fixture: ").unwrap().to_string())
+}
+
+async fn run(config: String, expect_success: bool) -> (TempDir, Value) {
+    run_file(config, "test.toml", &[], expect_success).await
+}
+
+async fn run_file(
+    config: String,
+    name: &str,
+    overrides: &[&str],
+    expect_success: bool,
+) -> (TempDir, Value) {
+    let work = tempdir().unwrap();
+    fs::write(work.path().join(name), config).unwrap();
+    let output = timeout(
+        Duration::from_secs(12),
+        Command::new(BIN)
+            .current_dir(work.path())
+            .args(["run", "--headless", "--config", name, "--report", "report"])
+            .args(overrides)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let report = work.path().join("report");
+    let summary = read(&report, "summary.json");
+    assert_eq!(
+        output.status.success(),
+        expect_success,
+        "stderr={} summary={summary}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (work, summary)
+}
+
+fn read(dir: &Path, file: &str) -> Value {
+    serde_json::from_slice(&fs::read(dir.join(file)).unwrap()).unwrap()
+}
+
+fn config(url: &str) -> String {
+    SAMPLE
+        .replace("http://127.0.0.1:8081/mcp", url)
+        .replace("30s", "2s")
+}
+
+#[test]
+fn malformed_workload_reports_location_without_echoing_arguments() {
+    let work = tempdir().unwrap();
+    let path = work.path().join("bad.toml");
+    fs::write(
+        &path,
+        SAMPLE.replace(
+            "arguments = { text = \"hello\" }",
+            "arguments = 'PRIVATE_INVALID_VALUE'",
+        ),
+    )
+    .unwrap();
+    let output = std::process::Command::new(BIN)
+        .args(["validate", "--config"])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid workload TOML at line"));
+    assert!(!stderr.contains("PRIVATE_INVALID_VALUE"));
+}
+
+#[test]
+fn yaml_validation_accepts_long_durations_and_keeps_parse_errors_private() {
+    let tmp = tempdir().unwrap();
+    let file = tmp.path().join("load.yaml");
+    let yaml = include_str!("../examples/local.yaml");
+    let validate = |duration| {
+        std::process::Command::new(BIN)
+            .args(["validate", "--config"])
+            .arg(&file)
+            .args(["--duration", duration])
+            .output()
+            .unwrap()
+    };
+    fs::write(&file, yaml).unwrap();
+    assert!(validate("7d").status.success());
+    assert!(!validate("7d 1ms").status.success());
+    fs::write(
+        &file,
+        yaml.replace("users: 2", "users: PRIVATE_INVALID_VALUE"),
+    )
+    .unwrap();
+    let result = validate("6h");
+    let error = String::from_utf8_lossy(&result.stderr);
+    assert!(!result.status.success());
+    assert!(
+        error.contains("invalid workload YAML at line") && !error.contains("PRIVATE_INVALID_VALUE")
+    );
+}
+
+#[tokio::test]
+async fn yaml_cli_overrides_drive_the_run_and_persist_without_editing_the_file() {
+    let (mut child, target) = fixture().await;
+    let yaml = format!(
+        r#"
+run: {{ name: CLI example, duration: 6h, seed: 42 }}
+target: {{ url: "{target}", protocol: "2025-11-25" }}
+load: {{ users: 1, wait: 1s, timeout: 12s }}
+tasks:
+  - tool: echo
+    weight: 1
+    arguments: {{ text: sample }}
+    assert_exists: /content/0/text
+"#
+    );
+    let (dir, s) = run_file(
+        yaml.clone(),
+        "work.yml",
+        &[
+            "--duration",
+            "1.5s",
+            "--users",
+            "3",
+            "--threads",
+            "1",
+            "--wait",
+            "300ms",
+            "--timeout",
+            "2s",
+        ],
+        true,
+    )
+    .await;
+    let meta = read(&dir.path().join("report"), "run.json");
+    for (field, n) in [
+        ("duration_ms", 1500),
+        ("users", 3),
+        ("threads", 1),
+        ("wait_ms", 300),
+        ("timeout_ms", 2000),
+    ] {
+        assert_eq!(meta[field], n);
+    }
+    assert_eq!(s["operations"]["initialize"]["count"], 3);
+    assert!(s["calls"]["count"].as_u64().unwrap() >= 3);
+    assert_eq!(s["calls"]["failed"], 0);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("work.yml")).unwrap(),
+        yaml
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn real_sessions_produce_consistent_redacted_offline_reports() {
+    let (mut child, url) = fixture().await;
+    let (work, s) = run(
+        config(&url)
+            .replace("threads = 2", "threads = 1")
+            .replace("hello", "PRIVATE_TEST_PAYLOAD")
+            .replace("Local smoke test", "</script><fixture>"),
+        true,
+    )
+    .await;
+    let ops = &s["operations"];
+    assert_eq!(s["protocols"][0], "2025-11-25");
+    assert_eq!(s["status"], "completed");
+    assert_eq!(ops["initialize"]["count"], 2);
+    assert_eq!(ops["tools/list"]["count"], 2);
+    assert_eq!(s["in_flight"], 0);
+    assert_eq!(s["sessions"], 0);
+    for name in ["tools/call/echo", "tools/call/status"] {
+        assert!(ops[name]["outcomes"]["success"].as_u64().unwrap() > 0);
+    }
+    let dir = work.path().join("report");
+    assert_eq!(read(&dir, "run.json")["threads"], 1);
+    assert_eq!(s["run"]["wait_ms"], 250);
+    assert_eq!(s["run"]["timeout_ms"], 3000);
+    let series = read(&dir, "timeseries.json");
+    let count: u64 = series
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["calls"].as_u64().unwrap())
+        .sum();
+    assert_eq!(s["calls"]["count"], count);
+    assert_eq!(s["calls"]["failed"], 0);
+    assert_eq!(series[0]["span_ms"], 1000.0);
+    for name in [
+        "index.html",
+        "summary.json",
+        "run.json",
+        "timeseries.json",
+        "operations.csv",
+        "errors.csv",
+        "junit.xml",
+    ] {
+        let text = fs::read_to_string(dir.join(name)).unwrap();
+        assert!(
+            !text.contains("PRIVATE_TEST_PAYLOAD"),
+            "{name} contains a tool argument/result"
+        );
+        if name == "index.html" {
+            assert!(!text.contains("</script><fixture>"));
+        }
+    }
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn discovery_assertion_semantic_and_rpc_failures_are_distinct() {
+    let (mut child, url) = fixture().await;
+    let cfg = config(&url)
+        .replace("2s", "1s")
+        .replace("users = 2", "users = 1")
+        .replace("2025-11-25", "auto");
+    let (header, _) = cfg.split_once("[[tasks]]").unwrap();
+    for (task, op, category) in [
+        ("tool = 'missing'", "tools/list", "capability"),
+        ("tool = 'echo'", "tools/call/echo", "json_rpc"),
+        (
+            "tool = 'status'\nassert_exists = '/absent'",
+            "tools/call/status",
+            "assertion",
+        ),
+        ("tool = 'reject'", "tools/call/reject", "tool_error"),
+    ] {
+        let (work, summary) = run(format!("{header}[[tasks]]\nweight = 1\n{task}\n"), false).await;
+        assert_eq!(summary["protocols"][0], "2026-07-28", "{summary}");
+        assert_eq!(summary["status"], "failed");
+        assert!(
+            summary["operations"][op]["outcomes"][category]
+                .as_u64()
+                .is_some_and(|n| n > 0),
+            "{summary}"
+        );
+        assert!(
+            fs::read_to_string(work.path().join("report/errors.csv"))
+                .unwrap()
+                .contains(&format!("{op},{category},"))
+        );
+    }
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn hung_handshake_times_out_without_dispatching_tools() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_, summary) = run(
+        config(&format!("http://{}/mcp", listener.local_addr().unwrap())).replace("3s", "100ms"),
+        false,
+    )
+    .await;
+    assert_eq!(summary["calls"]["count"], 0);
+    assert!(
+        summary["operations"]["initialize"]["outcomes"]["timeout"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+}

@@ -1,0 +1,11 @@
+/target/
+!/Cargo.lock
+/out/
+/web/node_modules/
+/web/dist/
+/web/test-results/
+
+# Only the built-in fixture workloads belong in Git.
+/examples/*
+!/examples/local.toml
+!/examples/local.yaml

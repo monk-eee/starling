@@ -1,0 +1,74 @@
+import { useState } from "react";
+import type { FormEvent } from "react";
+
+export type LoadSettings = {
+  users: number; threads: number; duration_ms: number; wait_ms: number; timeout_ms: number;
+};
+
+const durationUnits = [
+  { ms: 86400000, label: "days" }, { ms: 3600000, label: "hours" },
+  { ms: 60000, label: "minutes" }, { ms: 1000, label: "seconds" },
+];
+const unitFor = (ms: number) => durationUnits.find(u => ms >= u.ms && ms % u.ms === 0)?.ms ?? 1000;
+export function durationLabel(ms: number) {
+  const unit = unitFor(ms);
+  return `${ms / unit}${unit === 86400000 ? "d" : unit === 3600000 ? "h" : unit === 60000 ? "m" : "s"}`;
+}
+
+function Slider({ id, label, initial, hint }: { id: string; label: string; initial: number; hint: string }) {
+  const [value, setValue] = useState(initial);
+  return <div className="load-field">
+    <div><label htmlFor={id}>{label}</label><output htmlFor={id}>{value}</output></div>
+    <input id={id} name={id} type="range" min="1" max="8" value={value}
+      aria-describedby={`${id}-hint`} onChange={e => setValue(e.currentTarget.valueAsNumber)} />
+    <small id={`${id}-hint`}>{hint}</small>
+  </div>;
+}
+
+export function LoadForm({ initial, maxDurationMs, disabled, onStart }: {
+  initial: LoadSettings; maxDurationMs: number; disabled: boolean; onStart: (options: Partial<LoadSettings>) => void;
+}) {
+  const [unit, setUnit] = useState(() => unitFor(initial.duration_ms));
+  function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const data = new FormData(e.currentTarget);
+    const options: Partial<LoadSettings> = {};
+    for (const key of ["users", "threads", "duration_ms", "wait_ms", "timeout_ms"] as const) {
+      const value = Number(data.get(key));
+      const effective = key === "duration_ms" ? Math.round(value * unit) : value;
+      if (effective !== initial[key]) options[key] = effective;
+    }
+    onStart(options);
+  }
+  return <form id="load-settings" onSubmit={submit}>
+    <fieldset className="panel load-panel" disabled={disabled}>
+      <legend>Load settings</legend>
+      <div className="load-grid">
+        <Slider id="users" label="Concurrent users" initial={initial.users} hint="One MCP session per user." />
+        <Slider id="threads" label="Worker threads" initial={initial.threads} hint="Starling threads, not server threads." />
+        <div className="load-field"><label htmlFor="duration_ms">Duration</label>
+          <div className="duration-input">
+            <input id="duration_ms" name="duration_ms" type="number" min={1000 / unit} max={maxDurationMs / unit}
+              step={unit === 1000 ? "0.001" : "any"} required defaultValue={initial.duration_ms / unitFor(initial.duration_ms)} />
+            <select aria-label="Duration unit" value={unit} onChange={e => setUnit(Number(e.currentTarget.value))}>
+              {durationUnits.map(u => <option key={u.ms} value={u.ms}>{u.label}</option>)}
+            </select>
+          </div><small>1s to {durationLabel(maxDurationMs)}</small></div>
+        <div className="load-field"><label htmlFor="wait_ms">Wait between calls (ms)</label>
+          <input id="wait_ms" name="wait_ms" type="number" min="200" max="60000" required
+            defaultValue={initial.wait_ms} /><small>200 to 60,000 ms per user</small></div>
+        <div className="load-field"><label htmlFor="timeout_ms">Operation timeout (ms)</label>
+          <input id="timeout_ms" name="timeout_ms" type="number" min="50" max="15000" required
+            defaultValue={initial.timeout_ms} /><small>50 to 15,000 ms per operation</small></div>
+      </div>
+    </fieldset>
+  </form>;
+}
+
+export function SettingsSummary({ settings }: { settings: LoadSettings }) {
+  return <p className="panel load-summary"><strong>Load settings</strong>
+    <span>{settings.users} concurrent users</span><span>{settings.threads} worker threads</span>
+    <span>{durationLabel(settings.duration_ms)} duration</span><span>{settings.wait_ms} ms wait</span>
+    <span>{settings.timeout_ms} ms timeout</span>
+  </p>;
+}
