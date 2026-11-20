@@ -73,6 +73,60 @@ fn config(url: &str) -> String {
 }
 
 #[test]
+fn init_produces_usable_workloads_outside_the_checkout_and_preserves_user_files() {
+    let work = tempdir().unwrap();
+    let cli = |args: &[&str]| {
+        std::process::Command::new(BIN)
+            .current_dir(work.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(cli(&["init"]).status.success());
+    assert!(cli(&["validate"]).status.success());
+    let default = work.path().join("starling.yaml");
+    fs::write(&default, "my existing workload").unwrap();
+    assert!(!cli(&["init"]).status.success());
+    assert_eq!(fs::read_to_string(default).unwrap(), "my existing workload");
+    assert!(cli(&["init", "custom.toml"]).status.success());
+    assert!(
+        cli(&["validate", "--config", "custom.toml"])
+            .status
+            .success()
+    );
+    assert!(!cli(&["init", "custom.txt"]).status.success());
+    assert!(!work.path().join("custom.txt").exists());
+}
+
+#[tokio::test]
+async fn standalone_demo_runs_without_a_file_or_external_fixture() {
+    let work = tempdir().unwrap();
+    let output = timeout(
+        Duration::from_secs(12),
+        Command::new(BIN)
+            .current_dir(work.path())
+            .args(["demo", "--duration", "1s", "--report", "demo-report"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dir = work.path().join("demo-report");
+    let s = read(&dir, "summary.json");
+    assert_eq!(s["status"], "completed");
+    assert!(s["calls"]["count"].as_u64().unwrap() > 0);
+    assert_eq!(s["calls"]["failed"], 0);
+    assert!(dir.join("index.html").is_file());
+    assert!(!work.path().join("starling.yaml").exists());
+}
+
+#[test]
 fn malformed_workload_reports_location_without_echoing_arguments() {
     let work = tempdir().unwrap();
     let path = work.path().join("bad.toml");

@@ -1,0 +1,48 @@
+name: CLI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build and install the CLI
+        run: |
+          npm --prefix web ci
+          npm --prefix web run build
+          cargo install --path . --locked --root "$RUNNER_TEMP/cli"
+      - name: Try it outside the checkout
+        run: |
+          export PATH="$RUNNER_TEMP/cli/bin:$PATH"
+          cd "$(mktemp -d)"
+          starling init
+          starling validate
+          starling demo --duration 1s --report result
+          test -s result/index.html
+
+  linux-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and test the isolated CLI
+        run: |
+          docker build -t starling-ci .
+          docker run --rm --network none --entrypoint sh starling-ci -ec '
+            starling init
+            starling validate
+            starling demo --duration 1s --report result
+            test -s result/index.html
+          '

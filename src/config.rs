@@ -1,4 +1,11 @@
-use std::{collections::BTreeSet, fs::File, io::Read, net::SocketAddr, path::Path, time::Duration};
+use std::{
+    collections::BTreeSet,
+    fs::File,
+    io::{Read, Write},
+    net::SocketAddr,
+    path::Path,
+    time::Duration,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -6,6 +13,31 @@ use serde_json::{Map, Value};
 use url::{Host, Url};
 
 pub const MAX_DURATION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub const DEFAULT_PATH: &str = "starling.yaml";
+const STARTER_YAML: &str = include_str!("../examples/local.yaml");
+
+fn is_yaml(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"))
+}
+
+pub fn write_starter(path: &Path) -> Result<()> {
+    let template = if is_yaml(path) {
+        STARTER_YAML
+    } else if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
+    {
+        include_str!("../examples/local.toml")
+    } else {
+        bail!("choose a starter filename ending in .yaml, .yml, or .toml");
+    };
+    File::create_new(path)
+        .with_context(|| format!("creating {} (a new file is required)", path.display()))?
+        .write_all(template.as_bytes())
+        .with_context(|| format!("writing {}", path.display()))
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,6 +131,14 @@ pub struct Task {
 }
 
 impl Config {
+    pub fn demo(fixture: SocketAddr, options: StartOptions) -> Result<Self> {
+        let mut cfg: Self =
+            serde_yaml_ng::from_str(STARTER_YAML).context("reading the bundled demo")?;
+        cfg.run.name = "Starling demo".into();
+        cfg.target.url = Url::parse(&format!("http://{fixture}/mcp"))?;
+        cfg.with_options(options)
+    }
+
     pub fn with_options(mut self, options: StartOptions) -> Result<Self> {
         if let Some(users) = options.users {
             self.load.users = users;
@@ -130,11 +170,7 @@ impl Config {
             let at = line.map(|n| format!(" at line {n}")).unwrap_or_default();
             anyhow::anyhow!("invalid workload {format}{at}: check field names, values and types")
         };
-        let yaml = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
-        let cfg: Self = if yaml {
+        let cfg: Self = if is_yaml(path) {
             serde_yaml_ng::from_str(&text)
                 .map_err(|e| invalid("YAML", e.location().map(|loc| loc.line())))?
         } else {

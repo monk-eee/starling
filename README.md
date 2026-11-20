@@ -1,48 +1,103 @@
+<p align="center">
+  <a href="assets/starling_logo.png">
+    <picture>
+      <source media="(prefers-color-scheme: light)" srcset="web/src/assets/starling-bird.webp">
+      <img src="assets/starling_logo.png" width="180" alt="Starling bird in flight">
+    </picture>
+  </a>
+</p>
+
 # Starling
 
-Starling runs repeatable workloads against a **local MCP server** and shows what
-happened to each tool call. This is the first vertical slice in
-[the full technical specification, section 18](docs/SPEC.md#18-recommended-first-implementation-slice),
-not the entire v0.1 roadmap.
+Load-test a **local MCP server** and see which tools slow down or fail. Watch
+throughput, latency, and errors in the browser, then reopen the same dashboard
+as an offline HTML report.
 
-## Try it
+[Quickstart](#quickstart) · [Configure a workload](#configure-a-workload) · [MIT license](LICENSE)
 
-Building from source requires rustup, a native linker (MSVC C++ build tools and
-a Windows SDK on Windows), and Node.js 22.12+ with npm. Build the dashboard
-before Cargo; the executable embeds it and needs neither Node nor a CDN at runtime.
+## Quickstart
+
+Try the CLI from any directory. The built-in demo needs no config file, API
+key, or separate MCP server.
+
+**Build locally** with Git, [rustup](https://rustup.rs/),
+[Node.js](https://nodejs.org/) 22.12+ with npm, and a native linker. On macOS
+the Xcode Command Line Tools provide the linker (`xcode-select --install`);
+on Debian/Ubuntu use `build-essential`. Rustup selects the pinned toolchain.
+Or [build in a Linux container](#linux-container) without installing Rust or Node on the host.
+
+**1. Install `starling`.** Build the dashboard before the Rust binary, which
+embeds it. Node is not needed at runtime.
 
 ```sh
+git clone https://github.com/monk-eee/starling.git
+cd starling
 npm --prefix web ci
 npm --prefix web run build
-cargo build --locked
-cargo run --locked -- fixture
+cargo install --path . --locked
+starling --version
 ```
 
-In a second terminal:
+If your shell can't find `starling`, add Cargo's bin directory to `PATH`
+(by default, `export PATH="$HOME/.cargo/bin:$PATH"` in sh, bash, or zsh).
+
+**2. Run a five-second demo.** Starling starts its own local fixture on a free
+port, calls `echo` and `status`, saves a report, and shuts the fixture down:
 
 ```sh
-cargo run --locked -- run --config examples/local.toml --web
+starling demo --duration 5s
 ```
 
-Open the printed dashboard URL, adjust **Load settings**, then click **Start run**.
-The controls start with the workload file and any CLI overrides; changes apply to this run without
-editing the file. **Stop run** closes
-admission to new operations, drains outstanding calls up to their deadlines,
-closes the sessions, and writes the report. The dashboard stays up for inspection
-until Ctrl+C. Use **Configure next run** to tune and repeat with the last
-settings. Each repeat gets a new report directory beside the previous one.
-Ctrl+C during a run also drains it. `--listen 127.0.0.1:0` selects
-a free port for either the fixture or the dashboard.
+The last line gives the tool-call count, failures, and the path to the
+standalone HTML report under `out/`. Open it in your browser, even offline.
 
-For CI, leave the fixture running and use a **new** output directory:
+**3. Try the live dashboard.** Still just one terminal:
 
 ```sh
-cargo run --locked -- validate --config examples/local.toml
-cargo run --locked -- run --config examples/local.toml --headless --report out/smoke
+starling demo --web
 ```
 
-Open `out/smoke/index.html` directly, even offline. Without `--report`, Starling
-creates a unique directory under `out/`. An existing report is never overwritten.
+Open the **Dashboard:** URL it prints (not the fixture URL). Click **Start
+run** to watch two users call the tools for 30 seconds, or change **Load
+settings** first. **Stop run** drains outstanding calls and saves early.
+Choose **Export HTML** for an offline copy or **Configure next run** to try
+another load. Press Ctrl+C to close the dashboard and its fixture together.
+
+### Linux container
+
+From the clone, build the CLI and run the same demo with no external network:
+
+```sh
+docker build -t starling .
+mkdir -p out
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -v "$PWD/out:/work/out" starling demo --duration 5s
+```
+
+Open the generated `out/run-…/index.html` on the host. The fixture and CLI
+share the container's loopback interface; `127.0.0.1` inside a container
+is **not** the host's loopback. For a separate local MCP service, run the CLI
+in the same network namespace as that service. The headless demo needs no
+published ports.
+
+### Create your own workload
+
+In the directory where you want to keep your workload:
+
+```sh
+starling init
+starling validate
+```
+
+`init` creates `starling.yaml` and never overwrites a file. Edit its target,
+tools and assertions for a local MCP server you control. To exercise the
+unchanged starter instead, run `starling fixture` in a second terminal.
+Then run `starling run` for a headless test or `starling run --web` for the
+dashboard (default `http://127.0.0.1:8787`). `validate` checks the file
+without sending any requests.
+
+Each run gets a fresh report directory. Pass `--report PATH` to choose your
+own; Starling will not overwrite an existing report.
 Handshake, discovery, transport, assertion, tool, or persistence failures produce
 a nonzero exit; a failed workload still gets a report if storage is writable.
 
@@ -56,8 +111,9 @@ and limits. Override `--duration`, `--users`, `--threads`, `--wait`, or
 without sending any requests.
 
 ```sh
-cargo run --locked -- validate --config examples/local.yaml --duration 6h --users 4
-cargo run --locked -- run --config examples/local.yaml --duration 6h --users 4 --headless
+starling init workload.toml
+starling validate --config workload.toml --duration 6h --users 4
+starling run --config workload.toml --duration 6h --users 4 --headless
 ```
 
 For browser control, replace `--headless` with `--web` (if a dashboard is
@@ -126,7 +182,7 @@ or server error text. Run and tool names are public labels.
 
 ## Development
 
-The private Rust binary contains the CLI, MCP adapter and fixture, runner,
+The Rust binary contains the CLI, MCP adapter and fixture, runner,
 metrics, Axum controller and report writer in [src](src/). React, TypeScript and
 ECharts live in [web](web/). Rebuild the frontend before rebuilding Rust after a
 UI change. The Rust toolchain, Cargo dependencies and npm dependencies are pinned
@@ -145,10 +201,15 @@ cargo build --locked --release
 
 To run the browser test, also build the debug binary (`cargo build --locked`),
 then from `web/` run `npx playwright install chromium` and `npm run test:e2e`.
-Alternatively, set `STARLING_BROWSER_CHANNEL=msedge` to use an installed Edge.
+Alternatively, set `STARLING_BROWSER_CHANNEL` to an installed Playwright
+Chromium channel such as `chrome`.
 The test starts its own fixture and dashboard on ephemeral loopback ports,
 stops a run from the browser and reopens its report without a network connection.
 
 The Rust workload SDK, stdio transport, staged/open load models, pause/resume,
 remote agents, SQLite history, SLO thresholds and soak qualification remain
 later milestones in the [specification](docs/SPEC.md).
+
+## License
+
+Starling is distributed under the [MIT License](LICENSE).

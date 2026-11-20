@@ -1,0 +1,25 @@
+# Send only build inputs, never local workloads, reports, caches or Git history.
+**
+!Dockerfile
+!LICENSE
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!build.rs
+!src/
+!src/*.rs
+!examples/
+!examples/local.yaml
+!examples/local.toml
+!web/
+!web/package.json
+!web/package-lock.json
+!web/index.html
+!web/tsconfig.json
+!web/vite.config.ts
+!web/src/
+!web/src/*.ts
+!web/src/*.tsx
+!web/src/*.css
+!web/src/assets/
+!web/src/assets/starling-bird.webp
