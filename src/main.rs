@@ -98,13 +98,14 @@ async fn main() -> Result<()> {
                 .context("binding demo fixture")?;
             let address = listener.local_addr()?;
             let cfg = Config::demo(address, options)?;
+            let signal = shutdown_signal()?;
             println!("Demo fixture: http://{address}/mcp");
             let done = CancellationToken::new();
             let server = fixture::serve(listener, done.clone());
             tokio::pin!(server);
             tokio::select! {
                 result = &mut server => { result?; bail!("demo fixture stopped unexpectedly"); }
-                result = run_workload(cfg, output, 0) => {
+                result = run_workload(cfg, output, 0, signal) => {
                     done.cancel();
                     server.await?;
                     result?;
@@ -125,13 +126,14 @@ async fn main() -> Result<()> {
         }
         Command::Fixture { listen } => {
             let listener = TcpListener::bind(listen).await.context("binding fixture")?;
+            let signal = shutdown_signal()?;
             println!("Fixture: http://{}/mcp", listener.local_addr()?);
             let done = CancellationToken::new();
             let server = fixture::serve(listener, done.clone());
             tokio::pin!(server);
             tokio::select! {
                 result = &mut server => result?,
-                signal = tokio::signal::ctrl_c() => { signal?; done.cancel(); server.await?; }
+                event = signal => { event?; done.cancel(); server.await?; }
             }
         }
         Command::Run {
@@ -139,13 +141,48 @@ async fn main() -> Result<()> {
             options,
             output,
         } => {
-            run_workload(Config::read(&config, options)?, output, 8787).await?;
+            run_workload(
+                Config::read(&config, options)?,
+                output,
+                8787,
+                shutdown_signal()?,
+            )
+            .await?;
         }
     }
     Ok(())
 }
 
-async fn run_workload(cfg: Config, output: RunOutput, dashboard_port: u16) -> Result<()> {
+fn shutdown_signal() -> Result<impl Future<Output = Result<()>>> {
+    // Install Unix handlers before advertising readiness, including when running as PID 1.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut interrupt = signal(SignalKind::interrupt()).context("listening for SIGINT")?;
+        let mut terminate = signal(SignalKind::terminate()).context("listening for SIGTERM")?;
+        Ok(async move {
+            tokio::select! {
+                event = interrupt.recv() => event.context("SIGINT listener closed"),
+                event = terminate.recv() => event.context("SIGTERM listener closed"),
+            }
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(async {
+            tokio::signal::ctrl_c()
+                .await
+                .context("listening for Ctrl+C")
+        })
+    }
+}
+
+async fn run_workload(
+    cfg: Config,
+    output: RunOutput,
+    dashboard_port: u16,
+    signal: impl Future<Output = Result<()>>,
+) -> Result<()> {
     let run = Run::new(cfg);
     let listener = if output.web {
         Some(
@@ -163,14 +200,14 @@ async fn run_workload(cfg: Config, output: RunOutput, dashboard_port: u16) -> Re
     let dir = report::reserve(output.report)?;
     let (dir, frame) = if let Some(listener) = listener {
         println!("Dashboard: http://{}", listener.local_addr()?);
-        dashboard::serve(listener, run, dir).await?
+        dashboard::serve(listener, run, dir, signal).await?
     } else {
         run.start(Default::default())?;
         let execute = run.clone().execute(dir.clone());
         tokio::pin!(execute);
         let frame = tokio::select! {
             result = &mut execute => result?,
-            signal = tokio::signal::ctrl_c() => { signal?; run.stop(); execute.await? }
+            event = signal => { event?; run.stop(); execute.await? }
         };
         (dir, frame)
     };

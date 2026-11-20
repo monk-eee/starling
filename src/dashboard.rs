@@ -36,6 +36,7 @@ pub async fn serve(
     listener: TcpListener,
     run: Arc<Run>,
     dir: PathBuf,
+    signal: impl Future<Output = Result<()>>,
 ) -> Result<(PathBuf, Arc<Frame>)> {
     let address = listener.local_addr()?;
     let (controller, mut runs) = watch::channel(Slot { run, dir });
@@ -60,7 +61,6 @@ pub async fn serve(
         .into_future();
     tokio::pin!(server);
     let lifecycle = async {
-        let signal = tokio::signal::ctrl_c();
         tokio::pin!(signal);
         loop {
             let slot = runs.borrow_and_update().clone();

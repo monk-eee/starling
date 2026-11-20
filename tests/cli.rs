@@ -339,3 +339,116 @@ async fn hung_handshake_times_out_without_dispatching_tools() {
             >= 1
     );
 }
+
+#[cfg(unix)]
+mod signals {
+    use super::*;
+
+    fn terminate(child: &Child) {
+        let sent = std::process::Command::new("sh")
+            .args(["-c", "kill -TERM \"$1\"", "signal-test"])
+            .arg(child.id().unwrap().to_string())
+            .status()
+            .unwrap();
+        assert!(sent.success());
+    }
+
+    #[tokio::test]
+    async fn sigterm_saves_a_running_dashboard_before_exit() {
+        let work = tempdir().unwrap();
+        timeout(Duration::from_secs(15), async {
+            let mut child = Command::new(BIN)
+                .current_dir(work.path())
+                .args(["demo", "--web", "--duration", "1m", "--report", "report"])
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+            let api = loop {
+                let line = lines.next_line().await.unwrap().expect("no dashboard URL");
+                if let Some(url) = line.strip_prefix("Dashboard: ") {
+                    break format!("{url}/api/v1/runs/local");
+                }
+            };
+            let http = reqwest::Client::builder().no_proxy().build().unwrap();
+            let res = http
+                .post(format!("{api}/start"))
+                .header("X-Starling-Control", "1")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 202);
+            loop {
+                let bytes = http
+                    .get(&api)
+                    .send()
+                    .await
+                    .unwrap()
+                    .error_for_status()
+                    .unwrap()
+                    .bytes()
+                    .await
+                    .unwrap();
+                let frame: Value = serde_json::from_slice(&bytes).unwrap();
+                if frame["calls"]["count"].as_u64().unwrap() > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            terminate(&child);
+            assert!(child.wait().await.unwrap().success());
+        })
+        .await
+        .expect("dashboard did not stop");
+        let dir = work.path().join("report");
+        let s = read(&dir, "summary.json");
+        assert_eq!(s["status"], "stopped");
+        assert!(s["calls"]["count"].as_u64().unwrap() > 0);
+        assert_eq!(s["calls"]["failed"], 0);
+        assert_eq!(s["sessions"], 0);
+        assert_eq!(s["in_flight"], 0);
+        assert!(dir.join("index.html").is_file());
+    }
+
+    #[tokio::test]
+    async fn sigterm_drains_a_headless_operation_and_preserves_its_failure() {
+        let work = tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cfg = SAMPLE
+            .replace(
+                "127.0.0.1:8081",
+                &listener.local_addr().unwrap().to_string(),
+            )
+            .replace("users = 2", "users = 1");
+        fs::write(work.path().join("work.toml"), cfg).unwrap();
+        let mut child = Command::new(BIN)
+            .current_dir(work.path())
+            .args(["run", "--config", "work.toml", "--report", "report"])
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let (peer, _) = timeout(Duration::from_secs(8), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        terminate(&child);
+        assert!(
+            timeout(Duration::from_millis(100), child.wait())
+                .await
+                .is_err(),
+            "process exited with a handshake still in flight"
+        );
+        drop(peer);
+        let exit = timeout(Duration::from_secs(8), child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exit.code(), Some(1));
+        let s = read(&work.path().join("report"), "summary.json");
+        assert_eq!(s["status"], "failed");
+        assert_eq!(s["operations"]["initialize"]["failed"], 1);
+        assert_eq!(s["calls"]["count"], 0);
+        assert_eq!(s["in_flight"], 0);
+    }
+}

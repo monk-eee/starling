@@ -80,6 +80,12 @@ is **not** the host's loopback. For a separate local MCP service, run the CLI
 in the same network namespace as that service. The headless demo needs no
 published ports.
 
+To end a long run early, use `docker stop --timeout 45 CONTAINER` in another
+terminal (replace `CONTAINER` with its name or ID). On Linux and macOS, Starling
+handles SIGTERM like Ctrl+C: it stops issuing requests, waits for in-flight work
+and session shutdown, then writes the report. Allow enough time for both the
+configured operation timeout and cleanup. A forced kill cannot save the report.
+
 ### Create your own workload
 
 In the directory where you want to keep your workload:

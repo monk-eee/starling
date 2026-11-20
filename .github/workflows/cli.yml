@@ -29,6 +29,8 @@ jobs:
           starling validate
           starling demo --duration 1s --report result
           test -s result/index.html
+      - name: Verify native SIGTERM handling
+        run: cargo test --locked --release --test cli sigterm_
 
   linux-container:
     runs-on: ubuntu-latest
@@ -46,3 +48,18 @@ jobs:
             starling demo --duration 1s --report result
             test -s result/index.html
           '
+      - name: Stop the container and verify its saved report
+        run: |
+          reports="$(mktemp -d)"
+          cid="$(docker run -d --network none --user "$(id -u):$(id -g)" \
+            -v "$reports:/work/out" starling-ci demo --duration 1m --report out/stopped)"
+          trap 'docker rm -f "$cid" >/dev/null' EXIT
+          for _ in {1..100}; do
+            test -d "$reports/stopped" && break
+            sleep 0.1
+          done
+          test -d "$reports/stopped"
+          docker stop --timeout 15 "$cid"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$cid")" = 0
+          jq -e '.status == "stopped" and .in_flight == 0 and .sessions == 0' "$reports/stopped/summary.json"
+          test -s "$reports/stopped/index.html"
