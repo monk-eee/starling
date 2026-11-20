@@ -145,6 +145,49 @@ ports, select a bird, disconnect and rejoin it, load a YAML scenario, and
 open a report offline. Use `STARLING_BROWSER_CHANNEL=chrome` if testing
 with an installed Chrome instead.
 
+### Measure test coverage
+
+The [CLI workflow](.github/workflows/cli.yml) measures two different things on
+Linux. Open a [workflow run](https://github.com/monk-eee/starling/actions/workflows/cli.yml)
+for the covered/total counts per file. Download `coverage-rust` or
+`coverage-dashboard` for LCOV with individual missed lines. The dashboard
+artifact also has a browsable `html/index.html`. There is no combined score.
+
+| Check | What runs | Minimum |
+|---|---|---|
+| Rust | Unit and CLI tests, including their instrumented child processes and the two Unix shutdown tests | 75% of executable lines |
+| Dashboard | Chromium drives the real CLI and embedded dashboard, including reload and opening an exported report offline | 90% of executable lines and 80% of branches |
+
+From the clone on macOS or Linux, with Python 3, Node 22 and the pinned Rust
+toolchain available:
+
+```sh
+npm --prefix web ci
+npm --prefix web run build
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.8.7 --locked
+python3 tests/coverage.py rust
+
+(cd web && npx playwright install chromium)  # On a fresh Linux runner use install --with-deps chromium.
+python3 tests/coverage.py dashboard
+```
+
+The commands use the same [collector and thresholds](tests/coverage.py) as
+CI. Results go in `target/coverage/{rust,dashboard}/`. Rust counts each
+executable source line once, not once per overlapping function. A child
+that is forcibly killed doesn't get to flush its profile. Keep Rust
+unit tests in `tests.rs` under their module so test assertions don't inflate
+the number. Dashboard instrumentation runs on the authored TS/TSX before
+bundling, in a separate build; it doesn't replace your normal CLI or web
+assets. Unvisited modules still count. A missing source file, missing browser
+capture, failed test, or below-minimum result fails the check.
+
+These are whole-suite floors, not per-file or changed-line guarantees. Rust
+branch coverage isn't measured. Generated protobuf, dependencies, tests,
+CSS and build scripts aren't in the denominators. The separate mutual-TLS
+container check isn't folded into either number. Coverage shows what ran,
+not whether every outcome was asserted or the service survived a long soak.
+
 ### Verify two Linux containers
 
 With Docker, Python 3, and OpenSSL on the host, run the same integration

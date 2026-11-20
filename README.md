@@ -15,7 +15,7 @@ as an offline HTML report.
 
 [Bird quickstart](QUICKSTART.md) · [Example YAML](examples/local.yaml) · [Developer guide](developer.md) · [MIT license](LICENSE)
 
-[Architecture decisions](docs/adr.d/README.md) · [Changelog](CHANGELOG.md) · [Contributing and pre-commit](CONTRIBUTING.md) · [Report a security issue](SECURITY.md)
+[Architecture decisions](docs/adr.d/README.md) · [Changelog](CHANGELOG.md) · [Contributing and pre-commit](CONTRIBUTING.md) · [Test coverage](developer.md#measure-test-coverage) · [Report a security issue](SECURITY.md)
 
 ## Quickstart
 

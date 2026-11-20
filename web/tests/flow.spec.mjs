@@ -9,6 +9,18 @@ const binary = resolve(root, process.env.CARGO_TARGET_DIR ?? "target", "debug",
   process.platform === "win32" ? "starling.exe" : "starling");
 if (process.env.STARLING_BROWSER_CHANNEL) test.use({ channel: process.env.STARLING_BROWSER_CHANNEL });
 
+async function captureCoverage(page, info, label) {
+  const dir = process.env.STARLING_COVERAGE_CAPTURES;
+  if (!dir) return;
+  const hits = await page.evaluate(() => globalThis.__coverage__);
+  if (!hits || !Object.keys(hits).length) throw new Error(`No dashboard coverage at ${label}`);
+  await writeFile(join(dir, `${info.testId}-${label}.json`), JSON.stringify({ scheme: new URL(page.url()).protocol, hits }));
+}
+
+test.afterEach(async ({ page }, info) => {
+  if (info.status === "passed") await captureCoverage(page, info, "final");
+});
+
 function launch(args, prefix, children) {
   const child = spawn(binary, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   children.push(child);
@@ -79,6 +91,7 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     await expect.poll(() => frames.some(f => f.type === "tick" && f.open_interval?.calls > 0)).toBe(true);
     await expect(page.getByRole("rowheader", { name: "tools/call/echo" })).toBeVisible();
     await expect(page.getByRole("img", { name: "Latency by elapsed second" }).locator("canvas")).toBeVisible();
+    await captureCoverage(page, info, "before-reload");
     await page.reload();
     await expect(status).toHaveText("running");
     expect(frames.some(f => f.type === "snapshot" && (f.open_interval?.calls > 0 || f.series.length > 0))).toBe(true);
@@ -123,6 +136,7 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     expect(JSON.parse(await readFile(join(dirname(report), sibling, "run.json"), "utf8"))).toMatchObject(second.run);
     expect(await readFile(file)).toEqual(firstReport);
     const wsCount = frames.length;
+    await captureCoverage(page, info, "before-offline");
     await context.setOffline(true);
     await page.goto(pathToFileURL(file).href);
     await expect(page.getByText("Offline report", { exact: true })).toBeVisible();
@@ -196,8 +210,13 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     const yaml = ("# " + ".".repeat(2500) + "\n" + sample)
       .replace(`url: ${actualEndpoint}`, `url: http://127.0.0.1:1/mcp\n  endpoints: { candidate: "${actualEndpoint}" }`)
       .replace("30s","3s").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION");
-    await page.getByLabel("Load YAML").setInputFiles({name:"scenario.yaml",mimeType:"application/yaml",buffer:Buffer.from(yaml)});
+    const upload = page.getByLabel("Load YAML");
+    await upload.setInputFiles({name:"broken.yaml",mimeType:"application/yaml",buffer:Buffer.from("run: [")});
+    await expect(page.getByRole("alert")).toContainText("Could not load workload:");
+    await expect(status).toHaveText("ready");
+    await upload.setInputFiles({name:"scenario.yaml",mimeType:"application/yaml",buffer:Buffer.from(yaml)});
     await expect(page.getByRole("heading",{name:"Example questions"})).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(status).toHaveText("ready");
     await expect(page.getByRole("spinbutton",{name:"Duration",exact:true})).toHaveValue("3");
     await page.getByRole("combobox",{name:"Endpoint",exact:true}).selectOption("candidate");

@@ -3,13 +3,22 @@ use std::{fs, path::Path, process::Stdio, time::Duration};
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::{Child, Command},
+    io::{AsyncBufReadExt, BufReader, Lines},
+    process::{Child, ChildStdout, Command},
     time::timeout,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_starling");
 const SAMPLE: &str = include_str!("../examples/local.toml");
+
+async fn announced(lines: &mut Lines<BufReader<ChildStdout>>, prefix: &str) -> String {
+    while let Some(line) = lines.next_line().await.unwrap() {
+        if let Some(value) = line.strip_prefix(prefix) {
+            return value.to_owned();
+        }
+    }
+    panic!("process exited before printing {prefix}");
+}
 
 async fn fixture() -> (Child, String) {
     let mut child = Command::new(BIN)
@@ -19,12 +28,10 @@ async fn fixture() -> (Child, String) {
         .spawn()
         .unwrap();
     let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
-    let line = timeout(Duration::from_secs(8), reader.next_line())
+    let url = timeout(Duration::from_secs(8), announced(&mut reader, "Fixture: "))
         .await
-        .unwrap()
-        .unwrap()
         .unwrap();
-    (child, line.strip_prefix("Fixture: ").unwrap().to_string())
+    (child, url)
 }
 
 async fn run(config: String, expect_success: bool) -> (TempDir, Value) {
@@ -64,6 +71,20 @@ async fn run_file(
 
 fn read(dir: &Path, file: &str) -> Value {
     serde_json::from_slice(&fs::read(dir.join(file)).unwrap()).unwrap()
+}
+
+async fn snapshot(http: &reqwest::Client, url: &str) -> Value {
+    let bytes = http
+        .get(url)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
 }
 
 fn config(url: &str) -> String {
@@ -148,6 +169,120 @@ fn malformed_workload_reports_location_without_echoing_arguments() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid workload TOML at line"));
     assert!(!stderr.contains("PRIVATE_INVALID_VALUE"));
+}
+
+#[tokio::test]
+async fn failed_bird_reports_its_final_counts_without_starting_the_controller() {
+    let work = tempdir().unwrap();
+    timeout(Duration::from_secs(15), async {
+        let mut controller = Command::new(BIN)
+            .current_dir(work.path())
+            .args(["demo", "--web", "--report", "controller"])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut lines = BufReader::new(controller.stdout.take().unwrap()).lines();
+        let target = announced(&mut lines, "Demo fixture: ").await;
+        let url = announced(&mut lines, "Dashboard: ").await;
+        let home = announced(&mut lines, "Bird telemetry: ").await;
+        let yaml = format!(
+            "run: {{ name: Bird failure, duration: 1s, seed: 42 }}\n\
+            target: {{ url: '{target}', protocol: auto }}\n\
+            load: {{ users: 1, wait: 250ms, timeout: 2s }}\n\
+            tasks: [{{ tool: status, weight: 1, assert_exists: /missing }}]\n"
+        );
+        fs::write(work.path().join("bird.yaml"), yaml).unwrap();
+        let out = Command::new(BIN)
+            .current_dir(work.path())
+            .args([
+                "bird",
+                "--id",
+                "wing",
+                "--home",
+                &home,
+                "--config",
+                "bird.yaml",
+                "--report",
+                "wing",
+            ])
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let report = read(&work.path().join("wing"), "summary.json");
+        let failed = report["calls"]["failed"].as_u64().unwrap();
+        assert!(failed > 0);
+        assert_eq!(
+            report["operations"]["tools/call/status"]["outcomes"]["assertion"],
+            failed
+        );
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let roster = snapshot(&http, &format!("{url}/api/v1/flock")).await;
+        let birds = roster["birds"].as_array().unwrap();
+        assert_eq!(birds.len(), 1);
+        assert_eq!(birds[0]["id"], "wing");
+        assert_eq!(birds[0]["state"], "failed");
+        assert_eq!(birds[0]["requests"], report["calls"]["count"]);
+        assert_eq!(birds[0]["failed"], failed);
+        let local = snapshot(&http, &format!("{url}/api/v1/runs/local")).await;
+        assert_eq!(local["status"], "ready");
+        assert_eq!(local["calls"]["count"], 0);
+        controller.kill().await.unwrap();
+    })
+    .await
+    .expect("bird did not finish and report its failure");
+}
+
+#[tokio::test]
+async fn dashboard_fails_without_overwriting_an_existing_report_file() {
+    let work = tempdir().unwrap();
+    timeout(Duration::from_secs(12), async {
+        let mut child = Command::new(BIN)
+            .current_dir(work.path())
+            .args([
+                "demo",
+                "--web",
+                "--duration",
+                "1s",
+                "--wait",
+                "200ms",
+                "--report",
+                "report",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let url = announced(&mut lines, "Dashboard: ").await;
+        let html = work.path().join("report/index.html");
+        fs::write(&html, b"existing contents").unwrap();
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .post(format!("{url}/api/v1/runs/local/start"))
+            .header("X-Starling-Control", "1")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 202);
+        let output = child.wait_with_output().await.unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("writing report bundle"), "{error}");
+        assert_eq!(fs::read(html).unwrap(), b"existing contents");
+    })
+    .await
+    .expect("dashboard did not exit after export failed");
 }
 
 #[test]
@@ -411,23 +546,30 @@ mod signals {
     }
 
     #[tokio::test]
-    async fn sigterm_saves_a_running_dashboard_before_exit() {
+    async fn sigterm_drains_the_dashboard_and_its_reporting_bird() {
         let work = tempdir().unwrap();
-        timeout(Duration::from_secs(15), async {
+        let reported = timeout(Duration::from_secs(15), async {
             let mut child = Command::new(BIN)
                 .current_dir(work.path())
-                .args(["demo", "--web", "--duration", "1m", "--report", "report"])
+                .args([
+                    "demo",
+                    "--web",
+                    "--birds",
+                    "1",
+                    "--duration",
+                    "1m",
+                    "--wait",
+                    "200ms",
+                    "--report",
+                    "report",
+                ])
                 .stdout(Stdio::piped())
                 .kill_on_drop(true)
                 .spawn()
                 .unwrap();
             let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-            let api = loop {
-                let line = lines.next_line().await.unwrap().expect("no dashboard URL");
-                if let Some(url) = line.strip_prefix("Dashboard: ") {
-                    break format!("{url}/api/v1/runs/local");
-                }
-            };
+            let url = announced(&mut lines, "Dashboard: ").await;
+            let api = format!("{url}/api/v1/runs/local");
             let http = reqwest::Client::builder().no_proxy().build().unwrap();
             let res = http
                 .post(format!("{api}/start"))
@@ -436,25 +578,24 @@ mod signals {
                 .await
                 .unwrap();
             assert_eq!(res.status(), 202);
-            loop {
-                let bytes = http
-                    .get(&api)
-                    .send()
-                    .await
-                    .unwrap()
-                    .error_for_status()
-                    .unwrap()
-                    .bytes()
-                    .await
-                    .unwrap();
-                let frame: Value = serde_json::from_slice(&bytes).unwrap();
-                if frame["calls"]["count"].as_u64().unwrap() > 0 {
-                    break;
+            let reported = loop {
+                let roster = snapshot(&http, &format!("{url}/api/v1/flock")).await;
+                let bird = &roster["birds"][0];
+                if bird["id"] == "bird-01"
+                    && bird["state"] == "running"
+                    && let Some(n) = bird["requests"].as_u64().filter(|n| *n > 0)
+                    && snapshot(&http, &api).await["calls"]["count"]
+                        .as_u64()
+                        .unwrap()
+                        > 0
+                {
+                    break n;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            };
             terminate(&child);
             assert!(child.wait().await.unwrap().success());
+            reported
         })
         .await
         .expect("dashboard did not stop");
@@ -466,6 +607,14 @@ mod signals {
         assert_eq!(s["sessions"], 0);
         assert_eq!(s["in_flight"], 0);
         assert!(dir.join("index.html").is_file());
+        let bird_dir = dir.join("birds/bird-01");
+        let bird = read(&bird_dir, "summary.json");
+        assert_eq!(bird["status"], "stopped");
+        assert!(bird["calls"]["count"].as_u64().unwrap() >= reported);
+        assert_eq!(bird["calls"]["failed"], 0);
+        assert_eq!(bird["in_flight"], 0);
+        assert_eq!(bird["sessions"], 0);
+        assert!(bird_dir.join("index.html").is_file());
     }
 
     #[tokio::test]

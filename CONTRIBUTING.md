@@ -62,7 +62,8 @@ valid and an invalid commit, and checks that unstaged edits survive rejection.
   be checked with local links and the commands it changes.
 - Give reviewers a reproduction or before/after result using the fixture.
   State which platforms you actually tested and which you did not. The
-  [GitHub workflow](.github/workflows/cli.yml) covers macOS and Linux
-  containers; it does not run every check in the developer guide.
+  [GitHub workflow](.github/workflows/cli.yml) checks macOS and Linux
+  containers and publishes separate [Rust and browser coverage reports](developer.md#measure-test-coverage).
+  It does not run every check in the developer guide.
 - If the issue may be a vulnerability, follow [SECURITY.md](SECURITY.md)
   instead of posting private evidence in the PR.
