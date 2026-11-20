@@ -62,8 +62,8 @@ export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints
             </select>
           </div><small>1s to {durationLabel(maxDurationMs)}</small></div>
         <div className="load-field"><label htmlFor="wait_ms">Wait between calls (ms)</label>
-          <input id="wait_ms" name="wait_ms" type="number" min="200" max="60000" required
-            defaultValue={initial.wait_ms} /><small>200 to 60,000 ms per user</small></div>
+          <input id="wait_ms" name="wait_ms" type="number" min="0" max="60000" required aria-describedby="wait-hint"
+            defaultValue={initial.wait_ms} /><small id="wait-hint">0 = no pause. Add a delay only to pace each user.</small></div>
         <div className="load-field"><label htmlFor="timeout_ms">Operation timeout (ms)</label>
           <input id="timeout_ms" name="timeout_ms" type="number" min="50" max="15000" required
             defaultValue={initial.timeout_ms} /><small>50 to 15,000 ms per operation</small></div>
@@ -75,7 +75,7 @@ export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints
 export function SettingsSummary({ settings }: { settings: LoadSettings }) {
   return <p className="panel load-summary"><strong>Load settings</strong>
     <span>{settings.users} concurrent users</span><span>{settings.threads} worker threads</span>
-    <span>{durationLabel(settings.duration_ms)} duration</span><span>{settings.wait_ms} ms wait</span>
+    <span>{durationLabel(settings.duration_ms)} duration</span><span>{settings.wait_ms === 0 ? "No wait between calls" : `${settings.wait_ms} ms wait`}</span>
     <span>{settings.timeout_ms} ms timeout</span>
   </p>;
 }

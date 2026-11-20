@@ -65,7 +65,9 @@ starling bird --id wing-3 --home http://127.0.0.1:8788 --demo
 ```
 
 Click `wing-3` when it appears. It runs its own fixture and then keeps
-reporting. For a telemetry-only check, omit `--demo`: the new bird shows
+reporting. Its requests are sequential with no added pause. If you want a
+paced comparison, add `--wait 250ms`; use `--wait 0` to override a paced
+workload file. For a telemetry-only check, omit `--demo` and `--wait`: the new bird shows
 `idle` and sends no MCP requests.
 
 Press Ctrl+C **in terminal 2 only**. About five seconds after its last

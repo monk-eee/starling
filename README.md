@@ -103,9 +103,9 @@ be replaced. Loading after a finished run reserves a fresh report.
 [The example](examples/local.toml) runs two independent sessions for 30 seconds.
 Each initializes, requires the tools capability, discovers the configured tools
 with `tools/list`, then chooses between `echo` and `status` in a 3:1 ratio.
-Selections are seeded per user; response time determines how many calls fit in
-the run. Each user waits **after** each call. There are no overlapping task calls
-within a session.
+Selections are seeded per user. By default, each user starts its next request
+as soon as the previous one finishes. There is no pacing timer and no overlap
+within a session. A slower target naturally completes fewer requests.
 
 - Set `target.url` to a loopback HTTP endpoint you control. Redirects and
   proxies are disabled. Non-loopback targets, embedded credentials and URL
@@ -123,8 +123,12 @@ within a session.
   sets the number of Tokio worker threads in **Starling's load generator**
   (1–8, default 2); it does not change the MCP server's thread pool. Many
   users can share one thread while their requests wait for I/O.
-- `run.duration` accepts 1s–7d, `load.wait` 200ms–60s and `load.timeout`
-  50ms–15s. The same limits apply in the dashboard and in headless mode.
+- `load.wait` is optional. Omit it or set `wait: 0` for **no pause**. To model
+  user think time, set a positive duration such as `250ms` (1ms–60s). An
+  existing file with a positive wait keeps that behavior; `--wait 0` or **0**
+  in the dashboard overrides it for the run.
+- `run.duration` accepts 1s–7d and `load.timeout` 50ms–15s. The same limits
+  apply in the dashboard and in headless mode.
   Reports record the effective settings. A transport loss or timeout stops the
   run rather than retrying the workload.
 - Each task has a positive `weight` and may have a public `name` and an

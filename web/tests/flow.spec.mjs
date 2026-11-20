@@ -56,7 +56,7 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     expect((await request.post(start)).status()).toBe(403);
     expect((await request.post(start, { headers: { Origin: "https://other.invalid", "X-Starling-Control": "1" } })).status()).toBe(403);
     const headers = { "X-Starling-Control": "1" };
-    for (const data of [{ users: 9 }, { threads: 0 }, { duration_ms: 999 }, { duration_ms: 604800001 }, { wait_ms: 199 }, { timeout_ms: 15001 }]) {
+    for (const data of [{ users: 9 }, { threads: 0 }, { duration_ms: 999 }, { duration_ms: 604800001 }, { wait_ms: 60001 }, { timeout_ms: 15001 }]) {
       expect((await request.post(start, { headers, data })).status()).toBe(422);
     }
     const users = page.getByRole("slider", { name: "Concurrent users" });
@@ -68,7 +68,9 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     const unit = page.getByRole("combobox", { name: "Duration unit" });
     await duration.fill("6");
     await unit.selectOption({ label: "hours" });
-    await page.getByLabel("Wait between calls (ms)").fill("400");
+    const wait = page.getByLabel("Wait between calls (ms)");
+    await expect(wait).toHaveValue("0");
+    await wait.fill("400");
     await page.getByLabel("Operation timeout (ms)").fill("2500");
     await page.getByRole("button", { name: "Start run" }).click();
     await expect(status).toHaveText("running");
@@ -107,10 +109,13 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     await expect(unit).toHaveValue("3600000");
     await unit.selectOption({ label: "seconds" });
     await duration.fill("1.5");
+    await expect(wait).toHaveValue("400");
+    await wait.fill("0");
     await page.getByRole("button", { name: "Start run" }).click();
     await expect(status).toHaveText("completed");
     const second = frames.at(-1);
-    expect(second.run).toMatchObject({ ...applied, users: 1, threads: 2, duration_ms: 1500, bucket_secs: 1 });
+    expect(second.run).toMatchObject({ ...applied, users: 1, threads: 2, duration_ms: 1500, bucket_secs: 1, wait_ms: 0 });
+    await expect(page.getByText("No wait between calls", { exact: true })).toBeVisible();
     expect(second.operations.initialize.count).toBe(1);
     expect(second.calls.failed).toBe(0);
     const sibling = (await readdir(dirname(report))).find(name => name.startsWith("run-"));
@@ -145,7 +150,7 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
       server.onMessage(message => { if (forwardRoster) client.send(message); });
     });
     const report = info.outputPath("imported");
-    const url = await launch(["demo","--web","--birds","1","--report",report], "Dashboard: ", children);
+    const url = await launch(["demo","--web","--birds","1","--wait","375ms","--report",report], "Dashboard: ", children);
     await page.goto(url);
     const status = page.getByRole("status", {name:"Run status"});
     await expect(status).toHaveText("ready");
@@ -190,7 +195,7 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     expect(await bad.text()).not.toContain("private");
     const yaml = ("# " + ".".repeat(2500) + "\n" + sample)
       .replace(`url: ${actualEndpoint}`, `url: http://127.0.0.1:1/mcp\n  endpoints: { candidate: "${actualEndpoint}" }`)
-      .replace("30s","3s").replace("250ms","200ms").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION");
+      .replace("30s","3s").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION");
     await page.getByLabel("Load YAML").setInputFiles({name:"scenario.yaml",mimeType:"application/yaml",buffer:Buffer.from(yaml)});
     await expect(page.getByRole("heading",{name:"Example questions"})).toBeVisible();
     await expect(status).toHaveText("ready");
@@ -205,5 +210,7 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     const complete=JSON.parse(await readFile(join(report,"summary.json"),"utf8"));
     expect(complete.run.endpoint).toBe("candidate");
     expect(complete.calls.failed).toBe(0);
+    await expect.poll(async () => (await roster()).find(b => b.id === "bird-01")?.state, {timeout: 20000}).toBe("completed");
+    expect(JSON.parse(await readFile(join(report,"birds","bird-01","run.json"),"utf8")).wait_ms).toBe(375);
   } finally { await Promise.all(children.reverse().map(stopChild)); }
 });

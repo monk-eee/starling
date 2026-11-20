@@ -15,7 +15,7 @@ target:
 load:
   users: 2
   threads: 2
-  wait: 250ms
+  wait: 0  # Optional. No pause between responses and the next request.
   timeout: 3s
 
 tasks:

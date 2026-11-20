@@ -10,7 +10,7 @@ protocol = "2025-11-25"
 [load]
 users = 2
 threads = 2
-wait = "250ms"
+wait = 0
 timeout = "3s"
 
 [[tasks]]

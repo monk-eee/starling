@@ -48,7 +48,14 @@ pub async fn serve(
     let hub = flock::Hub::bind(bird_listen).await?;
     let shutdown = CancellationToken::new();
     let rpc_stop = CancellationToken::new();
-    let children = bird::spawn_demos(birds, &hub.endpoint, bird_listen, &dir, shutdown.clone())?;
+    let children = bird::spawn_demos(
+        birds,
+        &hub.endpoint,
+        bird_listen,
+        &dir,
+        run.config().load.wait,
+        shutdown.clone(),
+    )?;
     println!("Dashboard: http://{address}");
     println!("Bird telemetry: {}", hub.endpoint);
     let (controller, mut runs) = watch::channel(Slot {

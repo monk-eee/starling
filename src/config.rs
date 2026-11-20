@@ -120,7 +120,7 @@ pub struct Load {
     pub users: u32,
     #[serde(default = "default_threads")]
     pub threads: usize,
-    #[serde(with = "humantime_serde")]
+    #[serde(default, deserialize_with = "deserialize_wait")]
     pub wait: Duration,
     #[serde(with = "humantime_serde")]
     pub timeout: Duration,
@@ -130,8 +130,26 @@ fn default_threads() -> usize {
     2
 }
 
-fn cli_millis(text: &str) -> Result<u64, String> {
-    let d = humantime::parse_duration(text).map_err(|e| e.to_string())?;
+fn parse_duration(text: &str) -> Result<Duration, humantime::DurationError> {
+    humantime::parse_duration(if text == "-0" { "0" } else { text })
+}
+
+fn deserialize_wait<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wait {
+        Number(u64),
+        Text(String),
+    }
+    match Wait::deserialize(d)? {
+        Wait::Number(0) => Ok(Duration::ZERO),
+        Wait::Text(text) => parse_duration(&text).map_err(serde::de::Error::custom),
+        Wait::Number(_) => Err(serde::de::Error::custom("use 0 or a duration with units")),
+    }
+}
+
+pub fn cli_millis(text: &str) -> Result<u64, String> {
+    let d = parse_duration(text).map_err(|e| e.to_string())?;
     if !d.subsec_nanos().is_multiple_of(1_000_000) {
         return Err("use a duration in whole milliseconds".into());
     }
@@ -155,8 +173,8 @@ pub struct StartOptions {
     /// Planned run length, from 1s to 7d (e.g. 30s, 6h, 2d).
     #[arg(long = "duration", value_name = "TIME", value_parser = cli_millis)]
     pub duration_ms: Option<u64>,
-    /// Wait after each tool call, from 200ms to 60s.
-    #[arg(long = "wait", value_name = "TIME", value_parser = cli_millis)]
+    /// Optional per-user pause after a request. 0 means no pause (default); maximum 60s.
+    #[arg(long = "wait", value_name = "TIME", value_parser = cli_millis, allow_negative_numbers = true)]
     pub wait_ms: Option<u64>,
     /// Per-operation timeout, from 50ms to 15s.
     #[arg(long = "timeout", value_name = "TIME", value_parser = cli_millis)]
@@ -323,8 +341,9 @@ impl Config {
             "load.threads must be 1-8"
         );
         ensure!(
-            (Duration::from_millis(200)..=Duration::from_secs(60)).contains(&self.load.wait),
-            "load.wait must be 200ms-60s"
+            self.load.wait.is_zero()
+                || (Duration::from_millis(1)..=Duration::from_secs(60)).contains(&self.load.wait),
+            "load.wait must be 0 (no pause) or 1ms-60s"
         );
         ensure!(
             (Duration::from_millis(50)..=Duration::from_secs(15)).contains(&self.load.timeout),
@@ -404,6 +423,40 @@ mod tests {
 
     fn sample() -> Config {
         toml::from_str(include_str!("../examples/local.toml")).unwrap()
+    }
+
+    #[test]
+    fn optional_wait_accepts_zero_and_preserves_explicit_durations_in_both_formats() {
+        for (value, ms) in [
+            (None, 0),
+            (Some("0"), 0),
+            (Some("\"0ms\""), 0),
+            (Some("\"125ms\""), 125),
+        ] {
+            let yaml = format!(
+                "users: 1\ntimeout: 3s\n{}",
+                value.map(|s| format!("wait: {s}")).unwrap_or_default()
+            );
+            let toml = format!(
+                "users = 1\ntimeout = \"3s\"\n{}",
+                value.map(|s| format!("wait = {s}")).unwrap_or_default()
+            );
+            for load in [
+                serde_yaml_ng::from_str::<Load>(&yaml).unwrap(),
+                toml::from_str::<Load>(&toml).unwrap(),
+            ] {
+                let mut cfg = sample();
+                cfg.load = load;
+                cfg.validate().unwrap();
+                assert_eq!(cfg.load.wait, Duration::from_millis(ms));
+            }
+        }
+        for invalid in ["-1", "250", "\"-1s\""] {
+            assert!(
+                toml::from_str::<Load>(&format!("users = 1\ntimeout = \"3s\"\nwait = {invalid}"))
+                    .is_err()
+            );
+        }
     }
 
     #[test]

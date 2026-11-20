@@ -120,6 +120,7 @@ async fn standalone_demo_runs_without_a_file_or_external_fixture() {
     let dir = work.path().join("demo-report");
     let s = read(&dir, "summary.json");
     assert_eq!(s["status"], "completed");
+    assert_eq!(s["run"]["wait_ms"], 0);
     assert!(s["calls"]["count"].as_u64().unwrap() > 0);
     assert_eq!(s["calls"]["failed"], 0);
     assert!(dir.join("index.html").is_file());
@@ -204,7 +205,7 @@ tasks:
             "--threads",
             "1",
             "--wait",
-            "300ms",
+            "0",
             "--timeout",
             "2s",
         ],
@@ -216,13 +217,14 @@ tasks:
         ("duration_ms", 1500),
         ("users", 3),
         ("threads", 1),
-        ("wait_ms", 300),
+        ("wait_ms", 0),
         ("timeout_ms", 2000),
     ] {
         assert_eq!(meta[field], n);
     }
     assert_eq!(s["operations"]["initialize"]["count"], 3);
-    assert!(s["calls"]["count"].as_u64().unwrap() >= 3);
+    // At a one-second think time, three users could complete at most six calls in 1.5s.
+    assert!(s["calls"]["count"].as_u64().unwrap() > 6);
     assert_eq!(s["calls"]["failed"], 0);
     assert_eq!(
         fs::read_to_string(dir.path().join("work.yml")).unwrap(),
@@ -290,6 +292,7 @@ async fn real_sessions_produce_consistent_redacted_offline_reports() {
     let (mut child, url) = fixture().await;
     let (work, s) = run(
         config(&url)
+            .replace("wait = 0", "wait = \"250ms\"")
             .replace("threads = 2", "threads = 1")
             .replace("hello", "PRIVATE_TEST_PAYLOAD")
             .replace("Local smoke test", "</script><fixture>"),

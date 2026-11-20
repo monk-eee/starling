@@ -338,9 +338,11 @@ impl Run {
                 }
                 _ => (),
             }
-            tokio::select! {
-                _ = self.stop_signal.cancelled() => break,
-                _ = time::sleep(cfg.load.wait) => (),
+            if !cfg.load.wait.is_zero() {
+                tokio::select! {
+                    _ = self.stop_signal.cancelled() => break,
+                    _ = time::sleep(cfg.load.wait) => (),
+                }
             }
         }
     }
