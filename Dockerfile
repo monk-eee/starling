@@ -9,6 +9,7 @@ RUN npm run build
 FROM rust:1.97-slim-bookworm AS cli
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml build.rs ./
+COPY proto/flock.proto ./proto/
 COPY src/ ./src/
 COPY examples/local.yaml examples/local.toml ./examples/
 COPY --from=dashboard /web/dist/index.html ./web/dist/index.html

@@ -116,6 +116,10 @@ pub struct Metrics {
 impl Metrics {
     const POINT_BUDGET: u64 = 1800;
 
+    fn is_workload(key: &str) -> bool {
+        key.starts_with("tools/call/") || key.starts_with("task/")
+    }
+
     pub fn bucket_secs(duration: Duration) -> u64 {
         let seconds = duration.as_secs() + u64::from(duration.subsec_nanos() != 0);
         seconds.div_ceil(Self::POINT_BUDGET).max(1)
@@ -143,7 +147,7 @@ impl Metrics {
             .entry(key.to_owned())
             .or_default()
             .record(latency, outcome);
-        if key.starts_with("tools/call/") {
+        if Self::is_workload(key) {
             let index = self.index(at);
             self.windows
                 .entry(index)
@@ -158,7 +162,7 @@ impl Metrics {
             .operations
             .iter()
             .map(|(key, stats)| {
-                if key.starts_with("tools/call/") {
+                if Self::is_workload(key) {
                     calls.merge(stats);
                 }
                 (key.clone(), stats.summarize())

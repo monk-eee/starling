@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Write},
     net::SocketAddr,
@@ -14,7 +14,9 @@ use url::{Host, Url};
 
 pub const MAX_DURATION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub const DEFAULT_PATH: &str = "starling.yaml";
-const STARTER_YAML: &str = include_str!("../examples/local.yaml");
+pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
+pub const STARTER_YAML: &str = include_str!("../examples/local.yaml");
+const STARTER_TOML: &str = include_str!("../examples/local.toml");
 
 fn is_yaml(path: &Path) -> bool {
     path.extension()
@@ -29,7 +31,7 @@ pub fn write_starter(path: &Path) -> Result<()> {
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
     {
-        include_str!("../examples/local.toml")
+        STARTER_TOML
     } else {
         bail!("choose a starter filename ending in .yaml, .yml, or .toml");
     };
@@ -62,7 +64,45 @@ pub struct RunConfig {
 pub struct Target {
     pub url: Url,
     #[serde(default)]
+    pub endpoints: BTreeMap<String, Url>,
+    #[serde(default, rename = "select")]
+    pub selected: Option<String>,
+    #[serde(default)]
     pub protocol: Protocol,
+}
+
+impl Target {
+    pub fn endpoint(&self) -> &Url {
+        match &self.selected {
+            Some(name) => &self.endpoints[name],
+            None => &self.url,
+        }
+    }
+}
+
+fn validate_url(url: &mut Url) -> Result<()> {
+    ensure!(
+        url.scheme() == "http"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none(),
+        "target must use http without credentials, query or fragment"
+    );
+    match url.host() {
+        Some(Host::Ipv4(ip)) if ip.is_loopback() => (),
+        Some(Host::Ipv6(ip)) if ip.is_loopback() => (),
+        Some(Host::Domain("localhost")) => url.set_host(Some("127.0.0.1"))?,
+        _ => bail!("target must be a loopback IP or localhost"),
+    }
+    Ok(())
+}
+
+fn valid_label(s: &str) -> bool {
+    s.len() <= 64
+        && s.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
@@ -103,6 +143,9 @@ fn cli_millis(text: &str) -> Result<u64, String> {
 #[derive(clap::Args, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StartOptions {
+    /// One named target.endpoints entry, or "default" for target.url.
+    #[arg(long, value_name = "NAME")]
+    pub endpoint: Option<String>,
     /// Concurrent sessions (1-8).
     #[arg(long, value_name = "N")]
     pub users: Option<u32>,
@@ -123,23 +166,98 @@ pub struct StartOptions {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
-    pub tool: String,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub method: Method,
+    pub tool: Option<String>,
+    pub prompt: Option<String>,
     pub weight: u32,
     #[serde(default)]
     pub arguments: Map<String, Value>,
     pub assert_exists: Option<String>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Deserialize)]
+pub enum Method {
+    #[default]
+    #[serde(rename = "tools/call")]
+    CallTool,
+    #[serde(rename = "tools/list")]
+    ListTools,
+    #[serde(rename = "prompts/get")]
+    GetPrompt,
+    #[serde(rename = "prompts/list")]
+    ListPrompts,
+}
+
+impl Task {
+    pub fn operation(&self) -> String {
+        let mut key = match self.method {
+            Method::CallTool => format!(
+                "tools/call/{}",
+                self.tool.as_deref().expect("validated tool")
+            ),
+            Method::ListTools => "task/tools/list".into(),
+            Method::GetPrompt => format!(
+                "task/prompts/get/{}",
+                self.prompt.as_deref().expect("validated prompt")
+            ),
+            Method::ListPrompts => "task/prompts/list".into(),
+        };
+        if let Some(name) = &self.name {
+            key.push('/');
+            key.push_str(name);
+        }
+        key
+    }
+
+    fn validate_request(&self) -> Result<()> {
+        ensure!(
+            self.name.as_deref().is_none_or(valid_label),
+            "task.name must be a public 1-64 character identifier"
+        );
+        match self.method {
+            Method::CallTool => ensure!(
+                self.tool.as_deref().is_some_and(valid_label) && self.prompt.is_none(),
+                "tools/call requires a valid tool name and no prompt"
+            ),
+            Method::GetPrompt => {
+                ensure!(
+                    self.prompt.as_deref().is_some_and(valid_label) && self.tool.is_none(),
+                    "prompts/get requires a valid prompt name and no tool"
+                );
+                ensure!(
+                    self.arguments.values().all(Value::is_string),
+                    "prompt arguments must be strings"
+                );
+            }
+            Method::ListTools | Method::ListPrompts => ensure!(
+                self.tool.is_none() && self.prompt.is_none() && self.arguments.is_empty(),
+                "list requests do not take a tool, prompt, or arguments"
+            ),
+        }
+        Ok(())
+    }
+}
+
+fn invalid_document(format: &str, line: Option<usize>) -> anyhow::Error {
+    // Parser diagnostics may contain private questions or tool arguments.
+    let at = line.map(|n| format!(" at line {n}")).unwrap_or_default();
+    anyhow::anyhow!("invalid workload {format}{at}: check field names, values and types")
+}
+
 impl Config {
     pub fn demo(fixture: SocketAddr, options: StartOptions) -> Result<Self> {
-        let mut cfg: Self =
-            serde_yaml_ng::from_str(STARTER_YAML).context("reading the bundled demo")?;
+        let mut cfg: Self = toml::from_str(STARTER_TOML).context("reading the bundled demo")?;
         cfg.run.name = "Starling demo".into();
         cfg.target.url = Url::parse(&format!("http://{fixture}/mcp"))?;
         cfg.with_options(options)
     }
 
     pub fn with_options(mut self, options: StartOptions) -> Result<Self> {
+        if let Some(name) = options.endpoint {
+            self.target.selected = Some(name);
+        }
         if let Some(users) = options.users {
             self.load.users = users;
         }
@@ -162,26 +280,29 @@ impl Config {
     pub fn read(path: &Path, options: StartOptions) -> Result<Self> {
         let mut text = String::new();
         File::open(path)
-            .and_then(|f| f.take(65537).read_to_string(&mut text))
+            .and_then(|f| {
+                f.take(MAX_CONFIG_BYTES as u64 + 1)
+                    .read_to_string(&mut text)
+            })
             .with_context(|| format!("reading workload {}", path.display()))?;
-        ensure!(text.len() <= 65536, "workload exceeds 64 KiB");
-        // Parser diagnostics can quote input, including private tool arguments.
-        let invalid = |format: &str, line: Option<usize>| {
-            let at = line.map(|n| format!(" at line {n}")).unwrap_or_default();
-            anyhow::anyhow!("invalid workload {format}{at}: check field names, values and types")
-        };
-        let cfg: Self = if is_yaml(path) {
-            serde_yaml_ng::from_str(&text)
-                .map_err(|e| invalid("YAML", e.location().map(|loc| loc.line())))?
-        } else {
-            toml::from_str(&text).map_err(|e: toml::de::Error| {
-                invalid(
-                    "TOML",
-                    e.span()
-                        .map(|s| 1 + text.bytes().take(s.start).filter(|&b| b == b'\n').count()),
-                )
-            })?
-        };
+        ensure!(text.len() <= MAX_CONFIG_BYTES, "workload exceeds 64 KiB");
+        if is_yaml(path) {
+            return Self::from_yaml(&text, options);
+        }
+        let cfg: Self = toml::from_str(&text).map_err(|e: toml::de::Error| {
+            invalid_document(
+                "TOML",
+                e.span()
+                    .map(|s| 1 + text.bytes().take(s.start).filter(|&b| b == b'\n').count()),
+            )
+        })?;
+        cfg.with_options(options)
+    }
+
+    pub fn from_yaml(text: &str, options: StartOptions) -> Result<Self> {
+        ensure!(text.len() <= MAX_CONFIG_BYTES, "workload exceeds 64 KiB");
+        let cfg: Self = serde_yaml_ng::from_str(text)
+            .map_err(|e| invalid_document("YAML", e.location().map(|loc| loc.line())))?;
         cfg.with_options(options)
     }
 
@@ -209,34 +330,34 @@ impl Config {
             (Duration::from_millis(50)..=Duration::from_secs(15)).contains(&self.load.timeout),
             "load.timeout must be 50ms-15s"
         );
-        let url = &mut self.target.url;
+        validate_url(&mut self.target.url)?;
+        self.target.selected.take_if(|name| name == "default");
         ensure!(
-            url.scheme() == "http"
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none(),
-            "target must use http without credentials, query or fragment"
+            self.target
+                .selected
+                .as_ref()
+                .is_none_or(|name| self.target.endpoints.contains_key(name)),
+            "unknown endpoint: choose default or a name listed in target.endpoints"
         );
-        match url.host() {
-            Some(Host::Ipv4(ip)) if ip.is_loopback() => (),
-            Some(Host::Ipv6(ip)) if ip.is_loopback() => (),
-            Some(Host::Domain("localhost")) => url.set_host(Some("127.0.0.1"))?,
-            _ => bail!("target must be a loopback IP or localhost"),
+        ensure!(
+            self.target.endpoints.len() <= 8,
+            "configure at most 8 alternative endpoints"
+        );
+        for (name, url) in &mut self.target.endpoints {
+            ensure!(
+                valid_label(name) && name != "default",
+                "endpoint names must be public identifiers other than default"
+            );
+            validate_url(url)?;
         }
         ensure!((1..=16).contains(&self.tasks.len()), "configure 1-16 tasks");
         let mut names = BTreeSet::new();
         for task in &self.tasks {
+            task.validate_request()?;
             ensure!(
-                task.tool.len() <= 64
-                    && task.tool.starts_with(|c: char| c.is_ascii_alphanumeric())
-                    && task
-                        .tool
-                        .bytes()
-                        .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)),
-                "invalid tool name: use 1-64 letters, digits, '.', '-' or '_'"
+                names.insert(task.operation()),
+                "duplicate request: give repeated cases distinct task names"
             );
-            ensure!(names.insert(&task.tool), "duplicate tool: {}", task.tool);
             ensure!(
                 (1..=1000).contains(&task.weight),
                 "task weights must be 1-1000"
@@ -307,12 +428,41 @@ mod tests {
     }
 
     #[test]
+    fn request_validation_rejects_ambiguous_cases_and_checks_even_unused_targets() {
+        let mut cfg = sample();
+        cfg.tasks.push(cfg.tasks[0].clone());
+        assert!(cfg.validate().is_err());
+        cfg.tasks.last_mut().unwrap().name = Some("repeat".into());
+        cfg.validate().unwrap();
+        cfg.tasks[0].method = Method::ListTools;
+        assert!(cfg.validate().is_err()); // A list must not silently discard tool arguments.
+        let mut cfg = sample();
+        cfg.target.endpoints.insert(
+            "other".into(),
+            "http://example.invalid/mcp".parse().unwrap(),
+        );
+        assert!(cfg.validate().is_err());
+        cfg.target.endpoints.insert(
+            "other".into(),
+            "http://localhost:9000/private-path".parse().unwrap(),
+        );
+        cfg.target.selected = Some("other".into());
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.target.endpoint().as_str(),
+            "http://127.0.0.1:9000/private-path"
+        );
+        cfg.target.selected = Some("absent".into());
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
     fn selection_is_seeded_and_respects_weights() {
         let cfg = sample();
         let sequence = || {
             let mut rng = fastrand::Rng::with_seed(42);
             (0..1000)
-                .map(|_| cfg.pick(&mut rng).tool.as_str())
+                .map(|_| cfg.pick(&mut rng).tool.as_deref().unwrap())
                 .collect::<Vec<_>>()
         };
         let draws = sequence();

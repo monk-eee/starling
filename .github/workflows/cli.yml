@@ -29,8 +29,8 @@ jobs:
           starling validate
           starling demo --duration 1s --report result
           test -s result/index.html
-      - name: Verify native SIGTERM handling
-        run: cargo test --locked --release --test cli sigterm_
+      - name: Verify the native CLI, scenarios and shutdown
+        run: cargo test --locked --release --workspace --all-features
 
   linux-container:
     runs-on: ubuntu-latest
@@ -63,3 +63,7 @@ jobs:
           test "$(docker inspect --format '{{.State.ExitCode}}' "$cid")" = 0
           jq -e '.status == "stopped" and .in_flight == 0 and .sessions == 0' "$reports/stopped/summary.json"
           test -s "$reports/stopped/index.html"
+      - name: Verify independent birds over mutual TLS
+        run: |
+          docker pull node:22-bookworm-slim
+          python3 tests/flock_containers.py starling-ci node:22-bookworm-slim

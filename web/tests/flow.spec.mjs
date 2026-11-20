@@ -16,8 +16,8 @@ function launch(args, prefix, children) {
     let stdout = "", stderr = "";
     child.stdout.on("data", chunk => {
       stdout += chunk;
-      const line = stdout.split(/\r?\n/).find(s => s.startsWith(prefix));
-      if (line && stdout.includes("\n")) resolve(line.slice(prefix.length));
+      const line = stdout.split(/\r?\n/).slice(0, -1).find(s => s.startsWith(prefix));
+      if (line) resolve(line.slice(prefix.length));
     });
     child.stderr.on("data", chunk => { stderr += chunk; });
     child.once("error", reject);
@@ -25,12 +25,19 @@ function launch(args, prefix, children) {
   });
 }
 
+async function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+  await new Promise(resolve => { child.once("exit", resolve); child.kill(); });
+}
+
 test("start, receive live metrics, reconnect, stop and reopen the same report offline", async ({ page, context, request }, info) => {
   const children = [];
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
   const frames = [];
-  page.on("websocket", ws => ws.on("framereceived", ({ payload }) => frames.push(JSON.parse(String(payload)))));
+  page.on("websocket", ws => {
+    if (ws.url().endsWith("/runs/local/live")) ws.on("framereceived", ({ payload }) => frames.push(JSON.parse(String(payload))));
+  });
   try {
     const target = await launch(["fixture", "--listen", "127.0.0.1:0"], "Fixture: ", children);
     const config = info.outputPath("local.toml");
@@ -114,6 +121,7 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     await context.setOffline(true);
     await page.goto(pathToFileURL(file).href);
     await expect(page.getByText("Offline report", { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Live flock" })).toHaveCount(0);
     await bird.evaluate(img => img.decode());
     await expect(status).toHaveText("stopped");
     await expect(page.getByRole("button", { name: "Start run" })).toHaveCount(0);
@@ -123,10 +131,62 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     expect(frames.length).toBe(wsCount);
     expect(errors).toEqual([]);
   } finally {
-    await Promise.all(children.reverse().map(child => new Promise(resolve => {
-      if (child.exitCode !== null || child.signalCode !== null || !child.pid) { resolve(); return; }
-      child.once("exit", resolve);
-      child.kill();
-    })));
+    await Promise.all(children.reverse().map(stopChild));
   }
+});
+
+test("import a scenario, observe independent birds and reconnect a stale bird", async ({ page, request }, info) => {
+  test.setTimeout(50000);
+  const children = [];
+  try {
+    const report = info.outputPath("imported");
+    const url = await launch(["demo","--web","--birds","1","--report",report], "Dashboard: ", children);
+    await page.goto(url);
+    const status = page.getByRole("status", {name:"Run status"});
+    await expect(status).toHaveText("ready");
+    const flock = page.getByRole("region", {name:"Live flock"});
+    await expect(flock.getByRole("button", {name:"Bird bird-01"})).toBeVisible();
+    const {home} = await (await request.get(`${url}/api/v1/flock`)).json();
+    const startBird = () => launch(["bird","--id","wing-two","--home",home], "Bird wing-two connected", children);
+    await startBird();
+    const visitor = flock.getByRole("button", {name:"Bird wing-two"});
+    await expect(visitor).toContainText("idle");
+    const roster = async () => (await (await request.get(`${url}/api/v1/flock`)).json()).birds;
+    await expect.poll(async () => (await roster()).find(b => b.id === "bird-01")?.requests ?? 0).toBeGreaterThan(0);
+    expect(new Set((await roster()).map(b => b.pid)).size).toBe(2);
+    await visitor.click();
+    await expect(flock.getByLabel("Selected bird")).toContainText("0 requests");
+    await stopChild(children.at(-1));
+    await expect(visitor).toContainText("stale", {timeout:10000});
+    await startBird();
+    await expect(visitor).toContainText("idle");
+    await expect(flock.getByRole("button")).toHaveCount(2);
+
+    const load = `${url}/api/v1/runs/local/workload`;
+    const headers = {"X-Starling-Control":"1","Content-Type":"application/yaml"};
+    const sample = await (await request.get(`${url}/api/v1/workload/example`)).text();
+    const actualEndpoint = sample.match(/^  url: (http:\/\/127\.0\.0\.1:\d+\/mcp)$/m)[1];
+    expect((await request.post(load,{data:sample})).status()).toBe(403);
+    expect((await request.post(load,{headers,data:"x".repeat(65537)})).status()).toBe(413);
+    const bad = await request.post(load,{headers,data:sample.replace(actualEndpoint,"https://other.invalid/private")});
+    expect(bad.status()).toBe(422);
+    expect(await bad.text()).not.toContain("private");
+    const yaml = ("# " + ".".repeat(2500) + "\n" + sample)
+      .replace(`url: ${actualEndpoint}`, `url: http://127.0.0.1:1/mcp\n  endpoints: { candidate: "${actualEndpoint}" }`)
+      .replace("30s","3s").replace("250ms","200ms").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION");
+    await page.getByLabel("Load YAML").setInputFiles({name:"scenario.yaml",mimeType:"application/yaml",buffer:Buffer.from(yaml)});
+    await expect(page.getByRole("heading",{name:"Example questions"})).toBeVisible();
+    await expect(status).toHaveText("ready");
+    await expect(page.getByRole("spinbutton",{name:"Duration",exact:true})).toHaveValue("3");
+    await page.getByRole("combobox",{name:"Endpoint",exact:true}).selectOption("candidate");
+    await page.getByRole("button",{name:"Start run"}).click();
+    await expect(status).toHaveText("running");
+    expect((await request.post(load,{headers,data:sample})).status()).toBe(409);
+    await expect(status).toHaveText("completed",{timeout:9000});
+    await expect(page.getByRole("rowheader",{name:"task/prompts/get/ask/ask-question"})).toBeVisible();
+    expect((await readFile(join(report,"index.html"),"utf8"))).not.toContain("PRIVATE_UPLOAD_QUESTION");
+    const complete=JSON.parse(await readFile(join(report,"summary.json"),"utf8"));
+    expect(complete.run.endpoint).toBe("candidate");
+    expect(complete.calls.failed).toBe(0);
+  } finally { await Promise.all(children.reverse().map(stopChild)); }
 });

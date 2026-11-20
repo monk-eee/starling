@@ -1,6 +1,8 @@
+mod bird;
 mod config;
 mod dashboard;
 mod fixture;
+mod flock;
 mod mcp;
 mod metrics;
 mod report;
@@ -36,12 +38,17 @@ enum Command {
     },
     /// Try Starling with its own local fixture; no config or second terminal needed.
     Demo {
+        /// Launch 1-8 independent self-check birds, each with its own local fixture.
+        #[arg(long, requires = "web", value_parser = clap::value_parser!(u8).range(1..=8))]
+        birds: Option<u8>,
         #[command(flatten)]
         options: StartOptions,
         #[command(flatten)]
         output: RunOutput,
     },
-    /// Serve a local MCP fixture with echo, status and reject tools.
+    /// Phone home with one process's live telemetry. The controller cannot assign work.
+    Bird(bird::Bird),
+    /// Serve a local MCP fixture with echo, status and reject tools and an ask prompt.
     Fixture {
         #[arg(long, default_value = "127.0.0.1:8081", value_parser = loopback_addr)]
         listen: SocketAddr,
@@ -77,6 +84,9 @@ struct RunOutput {
     /// Dashboard address. Port 0 selects a free port.
     #[arg(long, value_parser = loopback_addr, requires = "web")]
     listen: Option<SocketAddr>,
+    /// Separate gRPC telemetry listener (default: a free loopback port). Non-loopback requires mTLS.
+    #[arg(long, requires = "web", value_name = "IP:PORT")]
+    bird_listen: Option<SocketAddr>,
     /// New report directory; defaults to a unique path under out/.
     #[arg(long)]
     report: Option<PathBuf>,
@@ -92,7 +102,12 @@ async fn main() -> Result<()> {
                 file.display()
             );
         }
-        Command::Demo { options, output } => {
+        Command::Bird(args) => args.run(shutdown_signal()?).await?,
+        Command::Demo {
+            options,
+            output,
+            birds,
+        } => {
             let listener = TcpListener::bind(("127.0.0.1", 0))
                 .await
                 .context("binding demo fixture")?;
@@ -100,28 +115,24 @@ async fn main() -> Result<()> {
             let cfg = Config::demo(address, options)?;
             let signal = shutdown_signal()?;
             println!("Demo fixture: http://{address}/mcp");
-            let done = CancellationToken::new();
-            let server = fixture::serve(listener, done.clone());
-            tokio::pin!(server);
-            tokio::select! {
-                result = &mut server => { result?; bail!("demo fixture stopped unexpectedly"); }
-                result = run_workload(cfg, output, 0, signal) => {
-                    done.cancel();
-                    server.await?;
-                    result?;
-                }
-            }
+            fixture::alongside(
+                listener,
+                run_workload(cfg, output, Some(address), birds.unwrap_or(0), signal),
+            )
+            .await?;
         }
         Command::Validate { config, options } => {
             let cfg = Config::read(&config, options)?;
             println!(
-                "Valid: {} users, {} workload threads, {} weighted tools; duration {}, wait {}, timeout {}",
+                "Valid: {} users, {} workload threads, {} weighted requests; duration {}, wait {}, timeout {}; endpoint {} ({})",
                 cfg.load.users,
                 cfg.load.threads,
                 cfg.tasks.len(),
                 humantime::format_duration(cfg.run.duration),
                 humantime::format_duration(cfg.load.wait),
-                humantime::format_duration(cfg.load.timeout)
+                humantime::format_duration(cfg.load.timeout),
+                cfg.target.selected.as_deref().unwrap_or("default"),
+                cfg.target.endpoint().origin().ascii_serialization(),
             );
         }
         Command::Fixture { listen } => {
@@ -144,7 +155,8 @@ async fn main() -> Result<()> {
             run_workload(
                 Config::read(&config, options)?,
                 output,
-                8787,
+                None,
+                0,
                 shutdown_signal()?,
             )
             .await?;
@@ -180,11 +192,13 @@ fn shutdown_signal() -> Result<impl Future<Output = Result<()>>> {
 async fn run_workload(
     cfg: Config,
     output: RunOutput,
-    dashboard_port: u16,
+    demo_fixture: Option<SocketAddr>,
+    birds: u8,
     signal: impl Future<Output = Result<()>>,
 ) -> Result<()> {
     let run = Run::new(cfg);
     let listener = if output.web {
+        let dashboard_port = if demo_fixture.is_some() { 0 } else { 8787 };
         Some(
             TcpListener::bind(
                 output
@@ -199,8 +213,16 @@ async fn run_workload(
     };
     let dir = report::reserve(output.report)?;
     let (dir, frame) = if let Some(listener) = listener {
-        println!("Dashboard: http://{}", listener.local_addr()?);
-        dashboard::serve(listener, run, dir, signal).await?
+        dashboard::serve(
+            listener,
+            run,
+            dir,
+            demo_fixture,
+            output.bird_listen.unwrap_or(([127, 0, 0, 1], 0).into()),
+            birds,
+            signal,
+        )
+        .await?
     } else {
         run.start(Default::default())?;
         let execute = run.clone().execute(dir.clone());

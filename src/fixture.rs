@@ -3,8 +3,10 @@ use std::time::Duration;
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
-        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+        GetPromptRequestParams, GetPromptResponse, GetPromptResult, JsonObject, ListPromptsResult,
+        ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, Role,
+        ServerCapabilities, ServerConfig, Tool,
     },
     service::RequestContext,
     transport::streamable_http_server::{
@@ -19,7 +21,41 @@ struct Fixture;
 
 impl ServerHandler for Fixture {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+    }
+
+    async fn list_prompts(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        Ok(ListPromptsResult::with_all_items(vec![Prompt::new(
+            "ask",
+            Some("Format a question."),
+            Some(vec![PromptArgument::new("question").with_required(true)]),
+        )]))
+    }
+
+    async fn get_prompt(
+        &self,
+        req: GetPromptRequestParams,
+        _: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        if req.name != "ask" {
+            return Err(ErrorData::invalid_params("unknown prompt", None));
+        }
+        let question = req
+            .arguments
+            .as_ref()
+            .and_then(|a| a.get("question"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ErrorData::invalid_params("expected question", None))?;
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, question)]).into())
     }
 
     async fn list_tools(
@@ -58,6 +94,19 @@ impl ServerHandler for Fixture {
             _ => return Err(ErrorData::invalid_params("unknown tool", None)),
         };
         Ok(CallToolResult::success(vec![ContentBlock::text(text.to_owned())]).into())
+    }
+}
+
+pub async fn alongside<T>(
+    listener: TcpListener,
+    work: impl Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    let done = CancellationToken::new();
+    let server = serve(listener, done.clone());
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => { result?; anyhow::bail!("demo fixture stopped unexpectedly"); }
+        result = work => { done.cancel(); server.await?; result }
     }
 }
 

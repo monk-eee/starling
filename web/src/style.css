@@ -22,6 +22,35 @@ h2 { font-size: 17px; }
 .badge.running, .badge.completed { color: #74dfc2; } .badge.failed, .alert { color: #ffa78f; }
 .alert { padding: 12px; border-left: 3px solid currentColor; margin: 12px 0; background: #302423; }
 .load-panel, .load-summary { margin: 0 0 16px; padding: 12px 16px 16px; }
+.workload-file { padding: 12px 16px; margin-bottom: 16px; display: grid; gap: 8px; overflow-wrap: anywhere; }
+.workload-file > div { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.workload-file a { color: inherit; }
+.workload-file input { max-width: 100%; }
+.flock { margin-top: 18px; padding: 14px 18px; }
+.flock header, .flock-detail { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; }
+.flock header { justify-content: space-between; }
+.flock h2 { font-size: 22px; }
+.flock-count, .flock-detail, .flock details, .flock-empty { font-size: 13px; }
+.flock-sky { display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  min-height: 120px; gap: 12px 22px; padding: 14px; margin: 10px 0; border-radius: 6px;
+  background: radial-gradient(ellipse at 50% 100%, #2b373f, #10191f); }
+.flock-bird { display: grid; justify-items: center; gap: 2px; min-width: 90px; max-width: 100%; overflow-wrap: anywhere;
+  background: transparent; color: inherit; border: 1px solid transparent; }
+.flock-bird small { display: inline-flex; gap: 5px; align-items: center; }
+.flock-bird small::before { content: ""; height: 6px; width: 6px; background: currentColor; border-radius: 50%; }
+.flock-bird[data-state="running"] small, .flock-bird[data-state="completed"] small { color: #74dfc2; }
+.flock-bird[data-state="failed"] small, .flock-bird[data-state="stale"] small { color: #ffa78f; }
+.flock-bird:hover, .flock-bird:focus-visible { background: #18242c; }
+.flock-bird:nth-child(3n+2) img { transform: translateY(-4px); }
+.flock-bird[aria-pressed="true"] { border-color: #74dfc2; }
+.flock-bird[data-state="stale"] img, .flock-bird[data-state="unknown"] img { opacity: .45; filter: grayscale(1); }
+@media (prefers-reduced-motion: no-preference) {
+  .flock-bird[data-state="running"] img { animation: flight 1.8s ease-in-out infinite alternate; }
+  @keyframes flight { from { transform: translateY(2px); } to { transform: translateY(-4px); } }
+}
+.flock-empty, .flock details { margin-top: 10px; }
+.flock summary { cursor: pointer; }
+.flock code { overflow-wrap: anywhere; }
 .load-panel legend { padding: 0 6px; font-size: 17px; font-weight: bold; }
 .load-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 16px; }
 .load-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }

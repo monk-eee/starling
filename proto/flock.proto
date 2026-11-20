@@ -1,0 +1,22 @@
+syntax = "proto3";
+package starling.flock.v1;
+
+// Observation only: this service never distributes work, targets or commands.
+service Telemetry {
+  rpc CheckIn (Heartbeat) returns (Receipt);
+}
+
+message Heartbeat {
+  string bird_id = 1;
+  fixed64 incarnation = 2;
+  uint64 sequence = 3;
+  uint32 pid = 4;
+  string state = 5;
+  uint64 requests = 6;
+  uint64 failed = 7;
+  uint32 sessions = 8;
+  uint32 in_flight = 9;
+  optional double p95_ms = 10;
+}
+
+message Receipt {}

@@ -13,7 +13,7 @@ Load-test a **local MCP server** and see which tools slow down or fail. Watch
 throughput, latency, and errors in the browser, then reopen the same dashboard
 as an offline HTML report.
 
-[Quickstart](#quickstart) · [Configure a workload](#configure-a-workload) · [MIT license](LICENSE)
+[Quickstart](#quickstart) · [Example YAML](examples/local.yaml) · [Live flock](#live-flock) · [MIT license](LICENSE)
 
 ## Quickstart
 
@@ -63,6 +63,53 @@ settings** first. **Stop run** drains outstanding calls and saves early.
 Choose **Export HTML** for an offline copy or **Configure next run** to try
 another load. Press Ctrl+C to close the dashboard and its fixture together.
 
+## Live flock
+
+```sh
+starling demo --web --birds 2
+```
+
+Open the printed **Dashboard:** URL. Each bird in the flock is a separate
+process, not a thread or a virtual user. Select one to see its PID, last
+heartbeat, sessions, in-flight work, requests, errors and p95. The two
+demo birds each exercise their **own** local fixture (one user for 15 seconds),
+then stay connected with their final results. Their individual reports are in
+`birds/` under the initial controller report directory. They are not sending load to
+the dashboard's selected target. Ctrl+C in the controller stops its birds.
+
+To join independently, start a dashboard and use its **Bird telemetry:** URL:
+
+```sh
+starling run --config starling.yaml --web --bird-listen 127.0.0.1:8788
+# Another terminal: an idle bird checks in but sends no workload requests.
+starling bird --id wing-1 --home http://127.0.0.1:8788
+# A bird can instead run one locally chosen workload and report its progress:
+starling bird --id wing-2 --home http://127.0.0.1:8788 --config starling.yaml
+```
+
+Birds send cumulative counters over gRPC once per second; the browser receives
+roster snapshots over WebSocket. Five seconds without a check-in marks a bird
+**stale**, not failed. Reconnection does not double-count; an active ID cannot
+be claimed by a second process. Stale entries expire after five minutes. Per-bird
+p95s describe independent runs; the page does not average them or mix bird
+traffic into the local run charts. No targets, questions, or raw results are
+transmitted by the telemetry service. It has no job-dispatch or start RPC.
+
+**Across machines or containers:** expose only the separate gRPC listener on
+your private network, not the dashboard. Set `STARLING_FLOCK_CA`,
+`STARLING_FLOCK_CERT`, and `STARLING_FLOCK_KEY` to PEM **file paths** on the
+controller and each worker. Use a dedicated CA, a server certificate valid for
+the controller's DNS name, and a distinct client certificate on each worker.
+Start the controller with `--web --bird-listen <private-IP>:8788`; use
+`--home https://<controller-DNS>:8788` on the workers. Non-loopback telemetry
+requires mutual TLS. Plain HTTP is permitted only on numeric loopback. Workload
+endpoints remain local to the bird running them. Do not commit keys or workloads
+containing private inputs.
+
+A bird with a workload stays connected after finishing so its final measurements
+remain visible. If it loses contact, it retries reporting, not requests to the
+test target. After 30 seconds without an acknowledgement it drains and exits.
+
 ### Linux container
 
 From the clone, build the CLI and run the same demo with no external network:
@@ -95,8 +142,8 @@ starling init
 starling validate
 ```
 
-`init` creates `starling.yaml` and never overwrites a file. Edit its target,
-tools and assertions for a local MCP server you control. To exercise the
+`init` creates the [example YAML](examples/local.yaml) and never overwrites a file.
+Edit its target, methods, questions and assertions for a local MCP server you control. To exercise the
 unchanged starter instead, run `starling fixture` in a second terminal.
 Then run `starling run` for a headless test or `starling run --web` for the
 dashboard (default `http://127.0.0.1:8787`). `validate` checks the file
@@ -110,8 +157,8 @@ a nonzero exit; a failed workload still gets a report if storage is writable.
 ### YAML and CLI
 
 `--config` accepts [YAML](examples/local.yaml) (`.yaml` or `.yml`) as
-well as [TOML](examples/local.toml). Both examples target the built-in
-fixture's `echo` and `status` tools. Both formats use the same fields
+well as [TOML](examples/local.toml). The YAML shows two questions for one
+tool, a measured catalog request, and an MCP prompt. Both formats use the same fields
 and limits. Override `--duration`, `--users`, `--threads`, `--wait`, or
 `--timeout` without editing the file. `validate` prints the effective values
 without sending any requests.
@@ -132,6 +179,12 @@ To try your own local server, copy either example to a different filename in
 `examples/`, then change the target URL, tools and assertions. Git ignores
 these local copies and all reports under `out/`.
 
+**From the dashboard:** choose **Download example YAML**, edit it, then use
+**Load YAML**. In the demo the download points to its actual fixture port.
+Loading validates the file and previews the request labels; it does **not**
+contact the target. Click **Start run** when ready. A running workload cannot
+be replaced. Loading after a finished run reserves a fresh report.
+
 ## Configure a workload
 
 [The example](examples/local.toml) runs two independent sessions for 30 seconds.
@@ -143,7 +196,11 @@ within a session.
 
 - Set `target.url` to a loopback HTTP endpoint you control. Redirects and
   proxies are disabled. Non-loopback targets, embedded credentials and URL
-  queries are rejected.
+  queries are rejected. Optionally add `target.endpoints` as a mapping of
+  public aliases to alternative local URLs. Choose **one endpoint per run**
+  with `target.select: candidate` in YAML, `--endpoint candidate` on the CLI,
+  or the dashboard's Endpoint selector; `default`
+  uses `target.url`. The same validation applies to every alternative.
 - `target.protocol = "2025-11-25"` selects the `initialize` handshake.
   `"auto"` (default) lets the official `rmcp` SDK attempt `server/discover`
   for 2026-07-28 and fall back to the legacy handshake. A target that needs the
@@ -157,15 +214,27 @@ within a session.
   50ms–15s. The same limits apply in the dashboard and in headless mode.
   Reports record the effective settings. A transport loss or timeout stops the
   run rather than retrying the workload.
-- Each `[[tasks]]` entry supplies a unique `tool`, positive `weight`, optional
-  `arguments` object and optional `assert_exists` JSON Pointer into the MCP
-  result. `isError: true` fails even if the pointer exists. The fixture's
-  `reject` tool returns such a result.
+- Each task has a positive `weight` and may have a public `name` and an
+  `assert_exists` JSON Pointer into the result. Give distinct names to repeated
+  cases for the same tool. Put the **question in `arguments`**, using the
+  argument name from the target's schema; Starling does not generate an LLM answer.
+
+| `method` | Request fields | What is measured |
+|---|---|---|
+| `tools/call` (default) | `tool`, optional `arguments` | One actual tool invocation; `isError: true` fails independently of assertions |
+| `tools/list` | None | First page of the tool catalog, without using the discovery cache |
+| `prompts/get` | `prompt`, optional string-valued `arguments` | Retrieve the named MCP prompt |
+| `prompts/list` | None | First page of the prompt catalog, without using the discovery cache |
+
+These are MCP methods, not arbitrary HTTP verbs. The target must advertise
+the capabilities required by the workload.
 
 ## Read the measurements
 
 Setup appears as `initialize` (or `session/startup` in auto mode) and
-`tools/list`. Tool-call KPIs exclude both. The operations table separates
+`tools/list` discovery when a tool is called. Workload KPIs exclude setup
+and include all scheduled methods. For example `tools/list` is setup, while
+`task/tools/list/catalog` is a scheduled request. The operations table separates
 transport, protocol, JSON-RPC, capability, tool-result, assertion, timeout and
 cancellation outcomes. A tool call's latency includes its assertion, but not
 think time.
@@ -184,7 +253,7 @@ Reports include the standalone HTML dashboard, public run metadata (`run.json`),
 counters and percentiles (`summary.json`), interval data (`timeseries.json`),
 `operations.csv`, `errors.csv`, and aggregated `junit.xml`. Reports and dashboard
 payloads do not include arguments, raw results, session IDs, full target paths,
-or server error text. Run and tool names are public labels.
+or server error text. Run, task, prompt, tool and endpoint alias names are public labels.
 
 ## Development
 
@@ -213,7 +282,7 @@ The test starts its own fixture and dashboard on ephemeral loopback ports,
 stops a run from the browser and reopens its report without a network connection.
 
 The Rust workload SDK, stdio transport, staged/open load models, pause/resume,
-remote agents, SQLite history, SLO thresholds and soak qualification remain
+remote job scheduling, cross-worker histogram merging, SQLite history, SLO thresholds and soak qualification remain
 later milestones in the [specification](docs/SPEC.md).
 
 ## License

@@ -6,6 +6,8 @@
 !Cargo.lock
 !rust-toolchain.toml
 !build.rs
+!proto/
+!proto/flock.proto
 !src/
 !src/*.rs
 !examples/

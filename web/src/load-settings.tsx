@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 export type LoadSettings = {
   users: number; threads: number; duration_ms: number; wait_ms: number; timeout_ms: number;
 };
+export type StartOptions = Partial<LoadSettings> & { endpoint?: string };
 
 const durationUnits = [
   { ms: 86400000, label: "days" }, { ms: 3600000, label: "hours" },
@@ -25,14 +26,17 @@ function Slider({ id, label, initial, hint }: { id: string; label: string; initi
   </div>;
 }
 
-export function LoadForm({ initial, maxDurationMs, disabled, onStart }: {
-  initial: LoadSettings; maxDurationMs: number; disabled: boolean; onStart: (options: Partial<LoadSettings>) => void;
+export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints, onStart }: {
+  initial: LoadSettings; maxDurationMs: number; disabled: boolean; endpoint: string; endpoints: string[];
+  onStart: (options: StartOptions) => void;
 }) {
   const [unit, setUnit] = useState(() => unitFor(initial.duration_ms));
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
-    const options: Partial<LoadSettings> = {};
+    const options: StartOptions = {};
+    const choice = data.get("endpoint");
+    if (typeof choice === "string" && choice !== endpoint) options.endpoint = choice;
     for (const key of ["users", "threads", "duration_ms", "wait_ms", "timeout_ms"] as const) {
       const value = Number(data.get(key));
       const effective = key === "duration_ms" ? Math.round(value * unit) : value;
@@ -44,6 +48,9 @@ export function LoadForm({ initial, maxDurationMs, disabled, onStart }: {
     <fieldset className="panel load-panel" disabled={disabled}>
       <legend>Load settings</legend>
       <div className="load-grid">
+        {endpoints.length > 0 && <div className="load-field"><label htmlFor="endpoint">Endpoint</label>
+          <select id="endpoint" name="endpoint" defaultValue={endpoint}>{["default", ...endpoints].map(e =>
+            <option key={e}>{e}</option>)}</select><small>One YAML target per run</small></div>}
         <Slider id="users" label="Concurrent users" initial={initial.users} hint="One MCP session per user." />
         <Slider id="threads" label="Worker threads" initial={initial.threads} hint="Starling threads, not server threads." />
         <div className="load-field"><label htmlFor="duration_ms">Duration</label>

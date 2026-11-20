@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use rmcp::{
     ClientLifecycleMode, ClientServiceExt, RoleClient, ServiceError,
     model::{
-        CallToolRequestParams, ClientConfig, Implementation, PaginatedRequestParams,
-        ProtocolVersion,
+        CallToolRequestParams, ClientConfig, ClientRequest, GetPromptRequestParams, Implementation,
+        PaginatedRequestParams, ProtocolVersion, ServerResult,
     },
     service::{ClientInitializeError, RunningService},
     transport::{
@@ -14,14 +14,14 @@ use rmcp::{
 };
 
 use crate::{
-    config::{Protocol, Target, Task},
+    config::{Method, Protocol, Target, Task},
     metrics::Outcome,
 };
 
 pub struct Session(RunningService<RoleClient, ClientConfig>);
 
 impl Session {
-    pub async fn open(target: &Target, timeout: Duration) -> Result<Self, Outcome> {
+    pub async fn open(target: &Target, tasks: &[Task], timeout: Duration) -> Result<Self, Outcome> {
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -29,7 +29,7 @@ impl Session {
             .connect_timeout(timeout)
             .build()
             .map_err(|_| Outcome::Transport)?;
-        let mut config = StreamableHttpClientTransportConfig::with_uri(target.url.as_str())
+        let mut config = StreamableHttpClientTransportConfig::with_uri(target.endpoint().as_str())
             .max_json_response_size(1024 * 1024)
             .max_sse_event_size(1024 * 1024)
             .max_error_response_size(0)
@@ -64,7 +64,11 @@ impl Session {
         let supported = info.protocol_version == ProtocolVersion::V_2025_11_25
             || (matches!(target.protocol, Protocol::Auto)
                 && info.protocol_version == ProtocolVersion::V_2026_07_28);
-        if info.capabilities.tools.is_none() || !supported {
+        let capable = tasks.iter().all(|task| match task.method {
+            Method::CallTool | Method::ListTools => info.capabilities.tools.is_some(),
+            Method::GetPrompt | Method::ListPrompts => info.capabilities.prompts.is_some(),
+        });
+        if !capable || !supported {
             return Err(Outcome::Capability);
         }
         Ok(Self(peer))
@@ -79,7 +83,7 @@ impl Session {
     }
 
     pub async fn discover(&self, tasks: &[Task]) -> Result<(), Outcome> {
-        let mut missing: BTreeSet<_> = tasks.iter().map(|t| t.tool.as_str()).collect();
+        let mut missing: BTreeSet<_> = tasks.iter().filter_map(|t| t.tool.as_deref()).collect();
         let mut cursor = None;
         for _ in 0..16 {
             let page = self
@@ -106,19 +110,45 @@ impl Session {
     }
 
     pub async fn call(&self, task: &Task) -> Result<(), Outcome> {
-        let params =
-            CallToolRequestParams::new(task.tool.clone()).with_arguments(task.arguments.clone());
-        let result = self.0.call_tool(params).await.map_err(service_error)?;
-        if result.is_error == Some(true) {
-            return Err(Outcome::ToolError);
-        }
-        if let Some(pointer) = &task.assert_exists {
-            let json = serde_json::to_value(result).map_err(|_| Outcome::Protocol)?;
-            if json.pointer(pointer).is_none() {
-                return Err(Outcome::Assertion);
+        let pointer = task.assert_exists.as_deref();
+        match task.method {
+            Method::CallTool => {
+                let params = CallToolRequestParams::new(task.tool.clone().expect("validated tool"))
+                    .with_arguments(task.arguments.clone());
+                let result = self.0.call_tool(params).await.map_err(service_error)?;
+                if result.is_error == Some(true) {
+                    return Err(Outcome::ToolError);
+                }
+                check_result(result, pointer)
+            }
+            Method::GetPrompt => {
+                let params =
+                    GetPromptRequestParams::new(task.prompt.clone().expect("validated prompt"))
+                        .with_arguments(task.arguments.clone());
+                let result = self.0.get_prompt(params).await.map_err(service_error)?;
+                check_result(result, pointer)
+            }
+            Method::ListTools | Method::ListPrompts => {
+                // A scheduled list measures the server, not the SDK's discovery cache.
+                let request = if task.method == Method::ListTools {
+                    ClientRequest::ListToolsRequest(Default::default())
+                } else {
+                    ClientRequest::ListPromptsRequest(Default::default())
+                };
+                match (
+                    task.method,
+                    self.0.send_request(request).await.map_err(service_error)?,
+                ) {
+                    (Method::ListTools, ServerResult::ListToolsResult(result)) => {
+                        check_result(result, pointer)
+                    }
+                    (Method::ListPrompts, ServerResult::ListPromptsResult(result)) => {
+                        check_result(result, pointer)
+                    }
+                    _ => Err(Outcome::Protocol),
+                }
             }
         }
-        Ok(())
     }
 
     pub async fn close(mut self, timeout: Duration) -> Result<(), Outcome> {
@@ -129,6 +159,16 @@ impl Session {
             .map(|_| ())
             .ok_or(Outcome::Timeout)
     }
+}
+
+fn check_result<T: serde::Serialize>(result: T, pointer: Option<&str>) -> Result<(), Outcome> {
+    if let Some(pointer) = pointer {
+        let json = serde_json::to_value(result).map_err(|_| Outcome::Protocol)?;
+        if json.pointer(pointer).is_none() {
+            return Err(Outcome::Assertion);
+        }
+    }
+    Ok(())
 }
 
 fn init_error(error: ClientInitializeError) -> Outcome {

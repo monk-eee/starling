@@ -2,7 +2,8 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, terminal, useFeed } from "./feed";
 import { Chart, errors, percentiles, throughput } from "./chart";
-import { LoadForm, SettingsSummary, durationLabel, type LoadSettings } from "./load-settings";
+import { Flock } from "./flock";
+import { LoadForm, SettingsSummary, durationLabel, type StartOptions } from "./load-settings";
 import starlingBird from "./assets/starling-bird.webp?inline";
 import "./style.css";
 
@@ -14,7 +15,24 @@ function Dashboard() {
   const { current, offline, connection, error } = useFeed();
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState("");
-  async function control(action: "start" | "stop" | "next", options?: Partial<LoadSettings>) {
+  async function loadYaml(file: File) {
+    setPending(true);
+    setActionError("");
+    try {
+      if (file.size > 65536) throw new Error("Workload files must be 64 KiB or smaller.");
+      const response = await fetch(`${api}/workload`, {
+        method: "POST", headers: { "X-Starling-Control": "1", "Content-Type": "application/yaml" }, body: file,
+      });
+      if (!response.ok) {
+        const detail = response.status === 422 ? await response.text() :
+          response.status === 409 ? "A run is already in progress." : `HTTP ${response.status}`;
+        throw new Error(`Could not load workload: ${detail}`);
+      }
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "The controller is unreachable.");
+    } finally { setPending(false); }
+  }
+  async function control(action: "start" | "stop" | "next", options?: StartOptions) {
     setPending(true);
     setActionError("");
     try {
@@ -43,10 +61,11 @@ function Dashboard() {
       <span> / &nbsp; MCP performance</span><small>{connection}</small>
     </nav>
     {(error || actionError) && <p className="alert" role="alert">{error || actionError}</p>}
+    {!offline && <Flock />}
     {!current ? <h1>Connecting to the run...</h1> : <>
       <header className="intro">
         <div><p className="eyebrow">{offline ? "Saved report" : "Local workload"}</p><h1>{current.run.name}</h1>
-          <p className="endpoint">{current.run.target_origin} &middot; Streamable HTTP
+          <p className="endpoint">{current.run.endpoint && current.run.endpoint !== "default" && `${current.run.endpoint}: `}{current.run.target_origin} &middot; Streamable HTTP
             {current.protocols.length > 0 && ` / MCP ${current.protocols.join(", ")}`}</p></div>
         <div className="actions">
           <span className={`badge ${current.status}`} aria-label="Run status" role="status">{current.status}</span>
@@ -62,16 +81,25 @@ function Dashboard() {
         </div>
       </header>
       {current.reason && <p className="alert" role="alert">{current.reason}</p>}
+      {!offline && (current.status === "ready" || terminal(current.status)) &&
+        <section className="panel workload-file" aria-label="YAML workload">
+          <div><h2>YAML workload</h2><a href="/api/v1/workload/example" download="starling.yaml">Download example YAML</a></div>
+          <label>Load YAML <input type="file" accept=".yaml,.yml" disabled={disabled}
+            onChange={e => { const file = e.currentTarget.files?.[0]; e.currentTarget.value = ""; if (file) void loadYaml(file); }} /></label>
+          <small>Choose the endpoint, methods and questions in your file. Loading validates it; Start run sends the requests.</small>
+          {current.run.requests && <p>Configured requests: {current.run.requests.join(", ")}</p>}
+        </section>}
       {settings && (!offline && current.status === "ready"
-        ? <LoadForm initial={settings} maxDurationMs={current.run.max_duration_ms ?? 900000}
-            disabled={disabled} onStart={options => void control("start", options)} />
+        ? <LoadForm key={current.generation} initial={settings} maxDurationMs={current.run.max_duration_ms ?? 900000}
+            disabled={disabled} endpoint={current.run.endpoint ?? "default"} endpoints={current.run.endpoint_names ?? []}
+            onStart={options => void control("start", options)} />
         : <SettingsSummary settings={settings} />)}
       <section className="kpis" aria-label="Run metrics">
         {[
-          ["Tool calls", number(current.calls.count, 0), `${number(current.calls.failed, 0)} failed`],
+          ["Workload requests", number(current.calls.count, 0), `${number(current.calls.failed, 0)} failed`],
           ["Throughput", last ? `${number(last.calls * 1000 / last.span_ms)}/s` : "\u2014",
             current.open_interval ? "Current partial interval" : "Latest interval"],
-          ["p95 latency", ms(current.calls.p95_ms), "All completed tool calls"],
+          ["p95 latency", ms(current.calls.p95_ms), "All completed workload requests"],
           ["Error rate", percentage(current.calls.failed, current.calls.count), "Includes assertion failures"],
           ["Active sessions", `${current.sessions}`, `${current.in_flight} operations in flight`],
         ].map(([label, value, note]) => <div key={label} className="kpi"><h2>{label}</h2><strong>{value}</strong><small>{note}</small></div>)}
@@ -84,7 +112,7 @@ function Dashboard() {
         <Chart title="Latency" unit="ms" points={points} lines={percentiles} />
         <Chart title="Error rate" unit="%" points={points} lines={errors} />
       </div>
-      <div className="section-title"><h2>Operations</h2><small>Setup is measured separately from tool calls</small></div>
+      <div className="section-title"><h2>Operations</h2><small>Setup is measured separately from scheduled requests</small></div>
       <section className="panel table-wrap"><table><thead><tr>
         {["Operation", "Count", "Failed", "p50", "p95", "p99", "Failure categories"].map(s => <th key={s}>{s}</th>)}
       </tr></thead><tbody>

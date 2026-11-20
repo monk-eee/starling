@@ -1,10 +1,15 @@
 run:
-  name: Local smoke test
+  name: Example questions
   duration: 30s
   seed: 42
 
 target:
+  # One Streamable HTTP MCP endpoint per run. Use a local test server you control.
   url: http://127.0.0.1:8081/mcp
+  # Optional: choose a different endpoint for the same questions with --endpoint candidate.
+  # endpoints:
+  #   candidate: http://127.0.0.1:8082/mcp
+  # select: candidate
   protocol: "2025-11-25"
 
 load:
@@ -14,10 +19,30 @@ load:
   timeout: 3s
 
 tasks:
-  - tool: echo
-    weight: 3
-    arguments: { text: hello }
+  # Replace echo and its text argument with your server's tool and input schema.
+  # Use public names for report rows; the question and raw answer stay out of reports.
+  - name: getting-started
+    method: tools/call
+    tool: echo
+    weight: 2
+    arguments:
+      text: "How do I get started?"
     assert_exists: /content/0/text
-  - tool: status
+  - name: check-status
+    method: tools/call
+    tool: echo
     weight: 1
-    assert_exists: /content/0
+    arguments:
+      text: "How do I check a job's status?"
+    assert_exists: /content/0/text
+  - name: catalog
+    method: tools/list
+    weight: 1
+    assert_exists: /tools/0/name
+  - name: ask-question
+    method: prompts/get
+    prompt: ask
+    weight: 1
+    arguments:
+      question: "Where is my report?"
+    assert_exists: /messages/0/content/text

@@ -232,6 +232,60 @@ tasks:
 }
 
 #[tokio::test]
+async fn named_yaml_cases_use_the_selected_endpoint_and_real_methods() {
+    let (mut child, target) = fixture().await;
+    let yaml = include_str!("../examples/local.yaml")
+        .replace(
+            "url: http://127.0.0.1:8081/mcp",
+            &format!("url: http://127.0.0.1:1/mcp\n  endpoints: {{ candidate: '{target}' }}"),
+        )
+        .replace("How do I get started?", "PRIVATE_SCENARIO_QUESTION");
+    let yaml = format!(
+        "{yaml}\n  - method: prompts/list\n    weight: 1\n    assert_exists: /prompts/0/name\n"
+    );
+    let (work, s) = run_file(
+        yaml,
+        "scenario.yaml",
+        &[
+            "--duration",
+            "3s",
+            "--wait",
+            "200ms",
+            "--endpoint",
+            "candidate",
+        ],
+        true,
+    )
+    .await;
+    assert_eq!(s["run"]["endpoint"], "candidate");
+    assert!(target.starts_with(s["run"]["target_origin"].as_str().unwrap()));
+    assert_eq!(s["operations"]["tools/list"]["count"], 2);
+    let cases = [
+        "tools/call/echo/getting-started",
+        "tools/call/echo/check-status",
+        "task/tools/list/catalog",
+        "task/prompts/get/ask/ask-question",
+        "task/prompts/list",
+    ];
+    let count: u64 = cases
+        .iter()
+        .map(|k| {
+            let n = s["operations"][k]["count"].as_u64().unwrap();
+            assert!(n > 0, "missing measured request {k}");
+            n
+        })
+        .sum();
+    assert_eq!(s["calls"]["count"], count);
+    assert_eq!(s["calls"]["failed"], 0);
+    assert!(
+        !fs::read_to_string(work.path().join("report/index.html"))
+            .unwrap()
+            .contains("PRIVATE_SCENARIO_QUESTION")
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
 async fn real_sessions_produce_consistent_redacted_offline_reports() {
     let (mut child, url) = fixture().await;
     let (work, s) = run(

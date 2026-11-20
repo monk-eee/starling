@@ -34,6 +34,17 @@ pub enum Status {
 }
 
 impl Status {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::Completed => "completed",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+
     pub fn terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Stopped | Self::Failed)
     }
@@ -43,6 +54,8 @@ impl Status {
 pub struct RunInfo {
     pub name: String,
     pub target_origin: String,
+    pub endpoint: String,
+    pub endpoint_names: Vec<String>,
     pub duration_ms: u64,
     pub max_duration_ms: u64,
     pub bucket_secs: u64,
@@ -51,13 +64,21 @@ pub struct RunInfo {
     pub wait_ms: u64,
     pub timeout_ms: u64,
     pub seed: u64,
+    pub requests: Vec<String>,
 }
 
 impl From<&Config> for RunInfo {
     fn from(cfg: &Config) -> Self {
         Self {
             name: cfg.run.name.clone(),
-            target_origin: cfg.target.url.origin().ascii_serialization(),
+            target_origin: cfg.target.endpoint().origin().ascii_serialization(),
+            endpoint: cfg
+                .target
+                .selected
+                .as_deref()
+                .unwrap_or("default")
+                .to_owned(),
+            endpoint_names: cfg.target.endpoints.keys().cloned().collect(),
             duration_ms: cfg.run.duration.as_millis() as u64,
             max_duration_ms: MAX_DURATION.as_millis() as u64,
             bucket_secs: Metrics::bucket_secs(cfg.run.duration),
@@ -66,6 +87,7 @@ impl From<&Config> for RunInfo {
             wait_ms: cfg.load.wait.as_millis() as u64,
             timeout_ms: cfg.load.timeout.as_millis() as u64,
             seed: cfg.run.seed,
+            requests: cfg.tasks.iter().map(|t| t.operation()).collect(),
         }
     }
 }
@@ -264,7 +286,10 @@ impl Run {
             Protocol::Auto => "session/startup",
         };
         let session = match self
-            .measured(startup, Session::open(&cfg.target, cfg.load.timeout))
+            .measured(
+                startup,
+                Session::open(&cfg.target, &cfg.tasks, cfg.load.timeout),
+            )
             .await
         {
             None => return,
@@ -279,10 +304,13 @@ impl Run {
             s.sessions += 1;
             s.protocols.insert(session.version());
         }
-        match self
-            .measured("tools/list", session.discover(&cfg.tasks))
-            .await
-        {
+        let discovery = if cfg.tasks.iter().any(|t| t.tool.is_some()) {
+            self.measured("tools/list", session.discover(&cfg.tasks))
+                .await
+        } else {
+            Some(Ok(()))
+        };
+        match discovery {
             Some(Ok(())) => self.call_loop(id, &session).await,
             Some(Err(e)) => {
                 self.halt(false, Some(format!("tools/list failed: {}", e.label())));
@@ -301,7 +329,7 @@ impl Run {
         let mut rng = fastrand::Rng::with_seed(cfg.run.seed.wrapping_add(u64::from(id)));
         loop {
             let task = cfg.pick(&mut rng);
-            let key = format!("tools/call/{}", task.tool);
+            let key = task.operation();
             match self.measured(&key, session.call(task)).await {
                 None => break,
                 Some(Err(e @ (Outcome::Transport | Outcome::Timeout))) => {
@@ -374,9 +402,9 @@ impl Run {
             let (calls, _) = s.metrics.summarize();
             if s.failure.is_none() {
                 s.failure = if calls.failed > 0 {
-                    Some("one or more tool calls failed".into())
+                    Some("one or more workload requests failed".into())
                 } else if !s.stopped_by_user && calls.count == 0 {
-                    Some("no tool calls completed before the deadline".into())
+                    Some("no workload requests completed before the deadline".into())
                 } else {
                     None
                 };

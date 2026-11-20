@@ -13,10 +13,13 @@ const point = z.object({
 });
 const frame = z.object({
   schema_version: z.literal(1), sequence: z.number().int(),
+  generation: z.number().int().optional(),
   run: z.object({
     name: z.string(), target_origin: z.string(), duration_ms: z.number(), users: z.number(),
     threads: z.number().int().optional(), wait_ms: z.number().optional(), timeout_ms: z.number().optional(),
     max_duration_ms: z.number().positive().optional(), bucket_secs: z.number().int().positive().optional(),
+    requests: z.array(z.string()).optional(),
+    endpoint: z.string().optional(), endpoint_names: z.array(z.string()).optional(),
   }),
   status: z.enum(["ready", "running", "stopping", "completed", "stopped", "failed"]),
   reason: z.string().nullable(), elapsed_ms: z.number(), sessions: z.number(), in_flight: z.number(),
@@ -35,6 +38,30 @@ function savedReport() {
   return value === null ? null : frame.parse(value);
 }
 
+export function subscribeLive(path: string, receive: (value: unknown, socket: WebSocket) => void,
+  disconnected: () => void, invalid: () => void) {
+  let disposed = false;
+  let socket: WebSocket;
+  let timer: ReturnType<typeof setTimeout>;
+  let backoff = 500;
+  function connect() {
+    socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${path}`);
+    socket.onmessage = ({ data }: MessageEvent<string>) => {
+      if (disposed) return;
+      try { receive(JSON.parse(data), socket); backoff = 500; }
+      catch { invalid(); socket.close(); }
+    };
+    socket.onclose = () => {
+      if (disposed) return;
+      disconnected();
+      timer = setTimeout(connect, backoff);
+      backoff = Math.min(5000, backoff * 2);
+    };
+  }
+  connect();
+  return () => { disposed = true; clearTimeout(timer); socket.close(); };
+}
+
 export function useFeed() {
   const [saved] = useState(savedReport);
   const [current, setCurrent] = useState<Frame | null>(saved);
@@ -43,41 +70,19 @@ export function useFeed() {
 
   useEffect(() => {
     if (saved) return;
-    let disposed = false;
-    let socket: WebSocket;
-    let timer: ReturnType<typeof setTimeout>;
     let last: Frame | null = null;
-    let backoff = 500;
-    function connect() {
-      socket = new WebSocket(`ws://${location.host}${api}/live`);
-      socket.onmessage = ({ data }: MessageEvent<string>) => {
-        try {
-          const next = message.parse(JSON.parse(data));
-          if (next.type === "tick" && (!last || next.sequence !== last.sequence + 1)) {
-            socket.send("snapshot");
-            return;
-          }
-          const history = last?.series ?? [];
-          last = { ...next, series: next.type === "snapshot" ? next.series :
-            next.series.length ? [...history, ...next.series] : history };
-          setCurrent(last);
-          setConnection("Connected");
-          setError("");
-          backoff = 500;
-        } catch {
-          setError("The controller sent an unreadable or incompatible metrics frame.");
-          socket.close();
-        }
-      };
-      socket.onclose = () => {
-        if (disposed) return;
-        setConnection("Reconnecting");
-        timer = setTimeout(connect, backoff);
-        backoff = Math.min(5000, backoff * 2);
-      };
-    }
-    connect();
-    return () => { disposed = true; clearTimeout(timer); socket.close(); };
+    return subscribeLive(`${api}/live`, (value, socket) => {
+      const next = message.parse(value);
+      if (next.type === "tick" && (!last || next.sequence !== last.sequence + 1)) {
+        socket.send("snapshot");
+        return;
+      }
+      const history = last?.series ?? [];
+      last = { ...next, series: next.type === "snapshot" ? next.series : next.series.length ? [...history, ...next.series] : history };
+      setCurrent(last);
+      setConnection("Connected");
+      setError("");
+    }, () => setConnection("Reconnecting"), () => setError("The controller sent an unreadable or incompatible metrics frame."));
   }, [saved]);
   return { current, connection, offline: saved !== null, error };
 }
