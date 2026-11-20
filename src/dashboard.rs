@@ -101,6 +101,7 @@ pub async fn serve(
             hub.flock.clone(),
             shutdown.clone(),
             hub.endpoint.clone(),
+            birds,
         ))
         .layer(DefaultBodyLimit::max(2048))
         .layer(middleware::from_fn_with_state(address, local_requests));

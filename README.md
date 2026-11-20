@@ -13,125 +13,38 @@ Load-test a **local MCP server** and see which tools slow down or fail. Watch
 throughput, latency, and errors in the browser, then reopen the same dashboard
 as an offline HTML report.
 
-[Quickstart](#quickstart) · [Example YAML](examples/local.yaml) · [Live flock](#live-flock) · [MIT license](LICENSE)
+[Bird quickstart](QUICKSTART.md) · [Example YAML](examples/local.yaml) · [Developer guide](developer.md) · [MIT license](LICENSE)
 
 ## Quickstart
 
-Try the CLI from any directory. The built-in demo needs no config file, API
-key, or separate MCP server.
-
-**Build locally** with Git, [rustup](https://rustup.rs/),
-[Node.js](https://nodejs.org/) 22.12+ with npm, and a native linker. On macOS
-the Xcode Command Line Tools provide the linker (`xcode-select --install`);
-on Debian/Ubuntu use `build-essential`. Rustup selects the pinned toolchain.
-Or [build in a Linux container](#linux-container) without installing Rust or Node on the host.
-
-**1. Install `starling`.** Build the dashboard before the Rust binary, which
-embeds it. Node is not needed at runtime.
-
-```sh
-git clone https://github.com/monk-eee/starling.git
-cd starling
-npm --prefix web ci
-npm --prefix web run build
-cargo install --path . --locked
-starling --version
-```
-
-If your shell can't find `starling`, add Cargo's bin directory to `PATH`
-(by default, `export PATH="$HOME/.cargo/bin:$PATH"` in sh, bash, or zsh).
-
-**2. Run a five-second demo.** Starling starts its own local fixture on a free
-port, calls `echo` and `status`, saves a report, and shuts the fixture down:
-
-```sh
-starling demo --duration 5s
-```
-
-The last line gives the tool-call count, failures, and the path to the
-standalone HTML report under `out/`. Open it in your browser, even offline.
-
-**3. Try the live dashboard.** Still just one terminal:
-
-```sh
-starling demo --web
-```
-
-Open the **Dashboard:** URL it prints (not the fixture URL). Click **Start
-run** to watch two users call the tools for 30 seconds, or change **Load
-settings** first. **Stop run** drains outstanding calls and saves early.
-Choose **Export HTML** for an offline copy or **Configure next run** to try
-another load. Press Ctrl+C to close the dashboard and its fixture together.
-
-## Live flock
+With the [CLI installed](QUICKSTART.md#install-the-cli), start from any writable
+directory. No config, credentials, or external MCP service are needed:
 
 ```sh
 starling demo --web --birds 2
 ```
 
-Open the printed **Dashboard:** URL. Each bird in the flock is a separate
-process, not a thread or a virtual user. Select one to see its PID, last
-heartbeat, sessions, in-flight work, requests, errors and p95. The two
-demo birds each exercise their **own** local fixture (one user for 15 seconds),
-then stay connected with their final results. Their individual reports are in
-`birds/` under the initial controller report directory. They are not sending load to
-the dashboard's selected target. Ctrl+C in the controller stops its birds.
+Open the printed **Dashboard:** URL and click `bird-01` under **The flock**.
+Its request count and p95 come from that worker process. Both birds start
+their own 15-second fixture runs immediately. Seeing **2 reporting, 0 running**
+afterward means both finished and are still reporting. **Start run** controls
+a *separate* workload on the dashboard host; it does not start the birds.
 
-To join independently, start a dashboard and use its **Bird telemetry:** URL:
+## Live flock
 
-```sh
-starling run --config starling.yaml --web --bird-listen 127.0.0.1:8788
-# Another terminal: an idle bird checks in but sends no workload requests.
-starling bird --id wing-1 --home http://127.0.0.1:8788
-# A bird can instead run one locally chosen workload and report its progress:
-starling bird --id wing-2 --home http://127.0.0.1:8788 --config starling.yaml
-```
+Expand **Connect a bird** for the `starling bird --id ... --home ...` command
+for *this* dashboard. Run it in another terminal to join idle, append `--demo`
+to exercise that bird's own fixture, or append `--config questions.yaml` to
+run your scenario on that bird. Each bird writes its own report.
 
-Birds send cumulative counters over gRPC once per second; the browser receives
-roster snapshots over WebSocket. Five seconds without a check-in marks a bird
-**stale**, not failed. Reconnection does not double-count; an active ID cannot
-be claimed by a second process. Stale entries expire after five minutes. Per-bird
-p95s describe independent runs; the page does not average them or mix bird
-traffic into the local run charts. No targets, questions, or raw results are
-transmitted by the telemetry service. It has no job-dispatch or start RPC.
-
-**Across machines or containers:** expose only the separate gRPC listener on
-your private network, not the dashboard. Set `STARLING_FLOCK_CA`,
-`STARLING_FLOCK_CERT`, and `STARLING_FLOCK_KEY` to PEM **file paths** on the
-controller and each worker. Use a dedicated CA, a server certificate valid for
-the controller's DNS name, and a distinct client certificate on each worker.
-Start the controller with `--web --bird-listen <private-IP>:8788`; use
-`--home https://<controller-DNS>:8788` on the workers. Non-loopback telemetry
-requires mutual TLS. Plain HTTP is permitted only on numeric loopback. Workload
-endpoints remain local to the bird running them. Do not commit keys or workloads
-containing private inputs.
-
-A bird with a workload stays connected after finishing so its final measurements
-remain visible. If it loses contact, it retries reporting, not requests to the
-test target. After 30 seconds without an acknowledgement it drains and exits.
+- [Walk through joining, running YAML, disconnecting, and finding reports](QUICKSTART.md#join-a-bird-yourself).
+- [Understand heartbeats or connect birds across hosts using mutual TLS](developer.md#connect-across-machines).
 
 ### Linux container
 
-From the clone, build the CLI and run the same demo with no external network:
-
-```sh
-docker build -t starling .
-mkdir -p out
-docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD/out:/work/out" starling demo --duration 5s
-```
-
-Open the generated `out/run-…/index.html` on the host. The fixture and CLI
-share the container's loopback interface; `127.0.0.1` inside a container
-is **not** the host's loopback. For a separate local MCP service, run the CLI
-in the same network namespace as that service. The headless demo needs no
-published ports.
-
-To end a long run early, use `docker stop --timeout 45 CONTAINER` in another
-terminal (replace `CONTAINER` with its name or ID). On Linux and macOS, Starling
-handles SIGTERM like Ctrl+C: it stops issuing requests, waits for in-flight work
-and session shutdown, then writes the report. Allow enough time for both the
-configured operation timeout and cleanup. A forced kill cannot save the report.
+The [container quickstart](QUICKSTART.md#linux-container) produces an offline
+report without publishing a port. To test two independent containerized birds
+checking in over gRPC, use the [developer walkthrough](developer.md#verify-two-linux-containers).
 
 ### Create your own workload
 
@@ -257,29 +170,9 @@ or server error text. Run, task, prompt, tool and endpoint alias names are publi
 
 ## Development
 
-The Rust binary contains the CLI, MCP adapter and fixture, runner,
-metrics, Axum controller and report writer in [src](src/). React, TypeScript and
-ECharts live in [web](web/). Rebuild the frontend before rebuilding Rust after a
-UI change. The Rust toolchain, Cargo dependencies and npm dependencies are pinned
-by the toolchain file and lockfiles.
-
-The header uses a [bird-only crop](web/src/assets/starling-bird.webp) of the
-[original logo](assets/starling_logo.png). It is embedded in the dashboard so
-exported HTML reports display it offline.
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-cargo test --locked --workspace --all-features
-cargo build --locked --release
-```
-
-To run the browser test, also build the debug binary (`cargo build --locked`),
-then from `web/` run `npx playwright install chromium` and `npm run test:e2e`.
-Alternatively, set `STARLING_BROWSER_CHANNEL` to an installed Playwright
-Chromium channel such as `chrome`.
-The test starts its own fixture and dashboard on ephemeral loopback ports,
-stops a run from the browser and reopens its report without a network connection.
+The [developer guide](developer.md) covers the build order, the path from a
+bird's gRPC heartbeat to the browser, and the Rust, browser, and container
+checks used to verify it.
 
 The Rust workload SDK, stdio transport, staged/open load models, pause/resume,
 remote job scheduling, cross-worker histogram merging, SQLite history, SLO thresholds and soak qualification remain

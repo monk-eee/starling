@@ -88,6 +88,7 @@ pub struct Flock(Arc<Mutex<BTreeMap<String, Seen>>>);
 struct BirdView {
     id: String,
     pid: u32,
+    sequence: String,
     state: String,
     age_ms: u64,
     stale: bool,
@@ -146,6 +147,8 @@ impl Flock {
                 (age < RETAIN).then(|| BirdView {
                     id: p.bird_id.clone(),
                     pid: p.pid,
+                    // Preserve the full protobuf uint64 in the browser.
+                    sequence: p.sequence.to_string(),
                     state: p.state.clone(),
                     age_ms: age.as_millis() as u64,
                     stale: age >= STALE,
@@ -223,11 +226,14 @@ struct Feed {
     flock: Flock,
     stop: CancellationToken,
     home: String,
+    demo_birds_launched: u8,
 }
 
 #[derive(Serialize)]
 struct Roster {
     home: String,
+    demo_birds_launched: u8,
+    stale_after_ms: u64,
     birds: Vec<BirdView>,
 }
 
@@ -235,19 +241,31 @@ impl Feed {
     fn snapshot(&self) -> Roster {
         Roster {
             home: self.home.clone(),
+            demo_birds_launched: self.demo_birds_launched,
+            stale_after_ms: STALE.as_millis() as u64,
             birds: self.flock.view(Instant::now()),
         }
     }
 }
 
-pub fn routes(flock: Flock, stop: CancellationToken, home: String) -> Router {
+pub fn routes(
+    flock: Flock,
+    stop: CancellationToken,
+    home: String,
+    demo_birds_launched: u8,
+) -> Router {
     Router::new()
         .route(
             "/api/v1/flock",
             get(|State(feed): State<Feed>| async move { Json(feed.snapshot()) }),
         )
         .route("/api/v1/flock/live", get(upgrade))
-        .with_state(Feed { flock, stop, home })
+        .with_state(Feed {
+            flock,
+            stop,
+            home,
+            demo_birds_launched,
+        })
 }
 
 async fn upgrade(State(feed): State<Feed>, ws: WebSocketUpgrade) -> Response {

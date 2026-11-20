@@ -5,9 +5,9 @@ import bird from "./assets/starling-bird.webp?inline";
 
 const counter = z.number().int().nonnegative();
 const rosterSchema = z.object({
-  home: z.string(),
+  home: z.string(), demo_birds_launched: counter, stale_after_ms: z.number().int().positive(),
   birds: z.array(z.object({
-    id: z.string(), pid: counter, state: z.enum(["idle", "ready", "running", "stopping", "completed", "stopped", "failed"]),
+    id: z.string(), pid: counter, sequence: z.string(), state: z.enum(["idle", "ready", "running", "stopping", "completed", "stopped", "failed"]),
     age_ms: counter, stale: z.boolean(), requests: counter, failed: counter, sessions: counter, in_flight: counter,
     p95_ms: z.number().nonnegative().nullable(),
   })),
@@ -18,17 +18,32 @@ export function Flock() {
   const [connection, setConnection] = useState("Connecting to flock");
   const [invalid, setInvalid] = useState(false);
   const [selected, setSelected] = useState<string>();
-  useEffect(() => subscribeLive("/api/v1/flock/live", value => {
-    setRoster(rosterSchema.parse(value)); setConnection("Live"); setInvalid(false);
-  }, () => setConnection("Telemetry disconnected"), () => setInvalid(true)), []);
+  useEffect(() => {
+    let deadline: ReturnType<typeof setTimeout>;
+    const unsubscribe = subscribeLive("/api/v1/flock/live", value => {
+      const next = rosterSchema.parse(value);
+      setRoster(next); setConnection("Live"); setInvalid(false);
+      clearTimeout(deadline);
+      deadline = setTimeout(() => setConnection("No recent flock data"), next.stale_after_ms);
+    }, () => {
+      clearTimeout(deadline); setConnection("Telemetry disconnected");
+    }, () => {
+      clearTimeout(deadline); setConnection("Flock data unavailable"); setInvalid(true);
+    });
+    return () => { clearTimeout(deadline); unsubscribe(); };
+  }, []);
   const birds = roster?.birds ?? [];
   const current = birds.find(b => b.id === selected) ?? birds[0];
   const stale = birds.filter(b => b.stale).length;
   const running = birds.filter(b => !b.stale && b.state === "running").length;
   return <section className="panel flock" aria-label="Live flock">
     <header><div><p className="eyebrow">Worker telemetry</p><h2>The flock</h2></div>
-      <p className="flock-count">{connection === "Live" ? `${birds.length - stale} connected · ${running} running · ${stale} stale` : connection}</p>
+      <p className="flock-count">{connection === "Live" ? `${birds.length - stale} reporting · ${running} running · ${stale} stale` : connection}</p>
     </header>
+    {roster && <p><small>
+      {roster.demo_birds_launched > 0 && `This controller launched ${roster.demo_birds_launched} local demo ${roster.demo_birds_launched === 1 ? "bird" : "birds"} at startup. `}
+      Reporting means a process checked in within {roster.stale_after_ms / 1000}s, not that it is running a test.
+    </small></p>}
     {invalid && <p role="alert">The controller sent an incompatible flock snapshot.</p>}
     {roster && (birds.length ? <>
       <div className="flock-sky" aria-label="Reporting birds">
@@ -39,7 +54,7 @@ export function Flock() {
         </button>)}
       </div>
       {current && <div className="flock-detail" aria-label="Selected bird">
-        <strong>{current.id}</strong><span>PID {current.pid}</span>
+        <strong>{current.id}</strong><span>PID {current.pid}</span><span>Heartbeat #{current.sequence}</span>
         <span>{connection === "Live" ? `Last heard ${(current.age_ms / 1000).toFixed(1)}s ago` : "Last known sample"}</span>
         <span>{current.requests.toLocaleString("en")} requests · {current.failed} failed</span>
         <span>{current.sessions} sessions · {current.in_flight} in flight</span>
