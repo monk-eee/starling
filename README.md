@@ -15,6 +15,8 @@ as an offline HTML report.
 
 [Bird quickstart](QUICKSTART.md) · [Example YAML](examples/local.yaml) · [Developer guide](developer.md) · [MIT license](LICENSE)
 
+[Architecture decisions](docs/adr.d/README.md) · [Changelog](CHANGELOG.md) · [Contributing and pre-commit](CONTRIBUTING.md) · [Report a security issue](SECURITY.md)
+
 ## Quickstart
 
 With the [CLI installed](QUICKSTART.md#install-the-cli), start from any writable
@@ -178,9 +180,8 @@ The [developer guide](developer.md) covers the build order, the path from a
 bird's gRPC heartbeat to the browser, and the Rust, browser, and container
 checks used to verify it.
 
-The Rust workload SDK, stdio transport, staged/open load models, pause/resume,
-remote job scheduling, cross-worker histogram merging, SQLite history, SLO thresholds and soak qualification remain
-later milestones in the [specification](docs/SPEC.md).
+See [known gaps](developer.md#known-gaps) before treating a
+[roadmap requirement](docs/SPEC.md) as a shipped feature.
 
 ## License
 

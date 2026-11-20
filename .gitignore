@@ -5,6 +5,11 @@
 /web/dist/
 /web/test-results/
 
+# A workload initialized in the checkout is local to its author.
+/starling.yaml
+/starling.yml
+/starling.toml
+
 # Only the built-in fixture workloads belong in Git.
 /examples/*
 !/examples/local.toml

@@ -1,0 +1,36 @@
+minimum_pre_commit_version: "3.5.0"
+repos:
+  - repo: local
+    hooks:
+      - id: staged-diff
+        name: Check staged whitespace and conflict markers
+        language: system
+        entry: git diff --cached --check
+        pass_filenames: false
+        always_run: true
+
+      - id: rustfmt
+        name: Check Rust formatting
+        language: system
+        entry: cargo fmt --all -- --check
+        files: '(\.rs$|(^|/)(Cargo\.toml|rust-toolchain\.toml|\.?rustfmt\.toml)$)'
+        pass_filenames: false
+
+      - id: local-only-paths
+        name: Keep local workloads and generated output out of Git
+        language: fail
+        entry: Unstage these files; only the two built-in fixture examples are public workloads.
+        files: '^(out/|target/|web/(node_modules|dist|test-results)/|examples/(?!local\.(yaml|toml)$)|starling\.(ya?ml|toml)$)'
+
+      - id: private-key-header
+        name: Reject PEM private key headers in text files
+        language: pygrep
+        entry: '^-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----'
+        types: [text]
+
+      - id: fragment-name
+        name: Check changelog fragment names
+        language: fail
+        entry: Use short-slug.category.md as described in changelog.d/README.md.
+        files: '^changelog\.d/'
+        exclude: '^changelog\.d/(README\.md|[a-z0-9]+(-[a-z0-9]+)*\.(added|changed|deprecated|removed|fixed|security)\.md)$'

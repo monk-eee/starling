@@ -1,6 +1,6 @@
 # Starling developer guide
 
-[Run your first flock](QUICKSTART.md) · [Workload fields and limits](README.md#configure-a-workload) · [Design and roadmap](docs/SPEC.md)
+[Run your first flock](QUICKSTART.md) · [Workload fields and limits](README.md#configure-a-workload) · [Design and roadmap](docs/SPEC.md) · [Architecture decisions](docs/adr.d/README.md) · [Contributing and pre-commit](CONTRIBUTING.md)
 
 ## Build and run from a checkout
 
@@ -162,3 +162,19 @@ requests, rejects an untrusted client certificate, stops one bird, waits for
 **stale**, then restarts it and checks that there are two live IDs again.
 It cleans up its containers, network and test keys. This verifies telemetry
 between processes; it is not a benchmark of a production MCP target.
+
+## Known gaps
+
+- **A reporting flock is not a distributed scheduler.** Start work on each
+  bird; there is no controller-side dispatch or global concurrency budget.
+  [Telemetry boundary](docs/adr.d/0002-telemetry-is-not-dispatch.md)
+- **A run percentile is local.** No fleet histogram is transmitted, so the
+  dashboard cannot show a correct fleet p95.
+  [Measurement boundary](docs/adr.d/0003-percentiles-need-distributions.md)
+- **Duration support is not soak qualification.** The CLI accepts runs up
+  to seven days. The [bounded-timeline regression](src/metrics.rs) simulates
+  elapsed time; it does not demonstrate a seven-day run on a real target.
+- **Reports are written on drain, one file at a time.** A storage failure can
+  leave a summary on disk without a complete HTML report. Check the CLI exit
+  status; the presence of the directory alone does not mean export succeeded.
+  There is no mid-run checkpoint. See the [report writer](src/report.rs).

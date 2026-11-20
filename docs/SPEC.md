@@ -6,11 +6,18 @@
 
 **Product:** Starling — a Rust load-testing and performance-analysis platform for Model Context Protocol servers
 
+**Read this as a roadmap, not a CLI reference.** The current CLI runs YAML or
+TOML scenarios against a loopback Streamable HTTP target. Birds report their
+own runs over gRPC; the controller does not assign them work. Use the
+[workload reference](../README.md#configure-a-workload) for supported methods
+and limits, [known gaps](../developer.md#known-gaps) for unimplemented goals,
+and the [ADR index](adr.d/README.md) for decisions under review.
+
 ## 1. Executive summary
 
-Starling is a code-first MCP load tester that can generate realistic concurrent client behavior, run locally or across distributed workers, and present live results through a browser-based dashboard.
+The proposed platform is a code-first MCP load tester for local and distributed workloads, with live results in a browser. The current CLI uses workload files, not a Rust workload SDK.
 
-The design borrows these successful ideas from :
+The design draws on these ideas from Locust:
 
 - User behavior defined in code.
 - Weighted tasks, per-user setup/teardown, and configurable think time.
@@ -113,6 +120,9 @@ Legacy HTTP+SSE support should be a post-MVP compatibility module rather than pa
 ---
 
 ## 4. User experience
+
+The commands in this section illustrate the **proposed** interface. For
+commands you can run today, start with the [quickstart](../QUICKSTART.md).
 
 ### 4.1 Operating modes
 
@@ -539,7 +549,7 @@ Starling should wrap the MCP SDK instead of exposing it directly to workloads. T
 
 ### 7.2 Code-first Rust API
 
-The primary authoring experience is a Rust crate that links against `starling-sdk`. This avoids unstable dynamic-library loading and gives workloads normal Cargo dependencies, type checking, IDE support, and reusable helper modules.
+The proposed authoring experience is a Rust crate that links against `starling-sdk`. This would avoid unstable dynamic-library loading and give workloads normal Cargo dependencies, type checking, IDE support, and reusable helper modules. For an executable scenario today, use the [YAML example](../examples/local.yaml).
 
 Illustrative proposed API:
 
@@ -982,7 +992,10 @@ Prohibited labels:
 
 ### 9.3 Aggregation
 
-Agents send one-second aggregate frames containing:
+The proposed fleet aggregation protocol needs more than the per-bird p95 in
+today's heartbeat. Do not average those values; see the
+[measurement ADR](adr.d/0003-percentiles-need-distributions.md).
+The proposed aggregate frames contain:
 
 - Exact counters.
 - Gauges.
@@ -1170,6 +1183,10 @@ Configurable policies:
 ## 12. Distributed execution
 
 ### 12.1 Control protocol
+
+Today the [wire contract](../proto/flock.proto) supports telemetry check-ins
+only. Workload distribution, synchronized starts, and rebalancing below are
+proposals, not features of `starling bird`.
 
 Controller-agent communication uses gRPC over TLS.
 
