@@ -27,4 +27,5 @@ Run `cargo test --locked --test cli real_sessions_produce_consistent_redacted_of
 after [building the dashboard](../../developer.md#build-and-run-from-a-checkout).
 That test checks the generated files for a sentinel payload. The
 [browser flow](../../web/tests/flow.spec.mjs) also checks live frames and the
-export. Any proposal for traces would need a separate data-handling decision.
+export. [ADR-0005](0005-process-telemetry.md) covers the separate, opt-in
+run span and its allowed fields. It does not authorize full request traces.

@@ -9,7 +9,8 @@ without a host Rust toolchain, see [Linux container](#linux-container).
 
 ## Install the CLI
 
-You need Git, [rustup](https://rustup.rs/), Node.js 22.12+ with npm, and
+You need Git, [rustup](https://rustup.rs/) (Rust 1.99; the checkout pins
+[1.99.1](rust-toolchain.toml)), Node.js 22.12+ with npm, and
 a native linker (Xcode Command Line Tools on macOS, `build-essential` on
 Debian/Ubuntu). Build the web assets first: Cargo embeds them in the binary.
 
@@ -24,6 +25,33 @@ starling bird --help
 
 If `starling` is not found after installing, add Cargo's bin directory to
 your shell's `PATH` (usually `export PATH="$HOME/.cargo/bin:$PATH"`).
+
+Once installed, the binary contains the dashboard, fixture and starter YAML.
+You do not need this checkout, Node.js, a second repository, or a collector
+to run it. `starling init` writes a workload; it is **not** required for a demo.
+
+## Verify the install and read the logs
+
+Run this from your shell on macOS or Linux. A fresh directory checks that
+the installed binary does not rely on files in the clone:
+
+```sh
+workdir="$(mktemp -d)"
+(cd "$workdir" && starling demo --duration 1s --report first-run 2>events.log) &&
+  grep -F '"event":"run_finished"' "$workdir/events.log" &&
+  test -s "$workdir/first-run/index.html"
+```
+
+The CLI prints the fixture address and report path to **stdout**. In the
+default configuration, `events.log` captures lifecycle events on **stderr**:
+`process_started`, `run_started`, `run_finished`, then `process_finished` on
+success. Look for `"status":"completed"`, a positive `requests` count and
+`"failed":0` in the `run_finished` row; the exact count varies. Open
+`$workdir/first-run/index.html` for the offline report. On a nonzero exit,
+read the whole log: stderr can also contain a human-readable diagnostic.
+
+There is no network export in this example. For a collector-enabled install,
+see the [OTLP build and runtime settings](developer.md#process-telemetry).
 
 ## Launch the flock
 

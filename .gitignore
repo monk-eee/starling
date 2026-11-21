@@ -5,6 +5,9 @@
 /web/dist/
 /web/test-results/
 
+# Source artwork may include authoring metadata. The public bird is in web/src/assets/.
+/assets/
+
 # A workload initialized in the checkout is local to its author.
 /starling.yaml
 /starling.yml

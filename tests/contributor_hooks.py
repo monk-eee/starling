@@ -49,17 +49,22 @@ def main():
         base = run("git", "rev-parse", "HEAD")
 
         (repo / "src/lib.rs").write_bytes(b"pub const VALUE:u8=2;\n")
+        (repo / "assets").mkdir()
+        (repo / "assets/source.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         (repo / "examples/personal.yaml").write_bytes(b"name: local-only\n")
         (repo / "changelog.d/wrong.md").write_bytes(b"Bad fragment name.\n")
         (repo / "note.txt").write_bytes(b"Trailing space \n")
         (repo / "key.txt").write_bytes(b"-----BEGIN " + b"PRIVATE KEY-----\nnot a real key\n")
         run("git", "add", ".")
-        run("git", "add", "--force", "examples/personal.yaml")
+        run("git", "check-ignore", "--quiet", "assets/source.png")
+        run("git", "add", "--force", "examples/personal.yaml", "assets/source.png")
         # A clean working copy must not disguise the unformatted staged blob.
         working = b"pub const VALUE: u8 = 2;\n"
         (repo / "src/lib.rs").write_bytes(working)
-        run("git", "commit", "-qm", "Invalid change",
-            failures=("staged-diff", "rustfmt", "local-only-paths", "private-key-header", "fragment-name"))
+        rejection = run("git", "commit", "-qm", "Invalid change",
+                        failures=("staged-diff", "rustfmt", "local-only-paths", "private-key-header", "fragment-name"))
+        if "assets/source.png" not in rejection.replace("\\", "/"):
+            raise RuntimeError("The hook did not flag the force-added source artwork")
         if run("git", "rev-parse", "HEAD") != base or (repo / "src/lib.rs").read_bytes() != working:
             raise RuntimeError("The rejected commit changed HEAD or failed to restore unstaged work")
         print("Valid commit accepted; all five checks rejected bad staged files; unstaged work preserved.")

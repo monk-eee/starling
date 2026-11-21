@@ -1,9 +1,6 @@
 <p align="center">
-  <a href="assets/starling_logo.png">
-    <picture>
-      <source media="(prefers-color-scheme: light)" srcset="web/src/assets/starling-bird.webp">
-      <img src="assets/starling_logo.png" width="180" alt="Starling bird in flight">
-    </picture>
+  <a href="web/src/assets/starling-bird.webp">
+    <img src="web/src/assets/starling-bird.webp" width="180" alt="Starling bird in flight">
   </a>
 </p>
 
@@ -13,9 +10,9 @@ Load-test a **local MCP server** and see which tools slow down or fail. Watch
 throughput, latency, and errors in the browser, then reopen the same dashboard
 as an offline HTML report.
 
-[Bird quickstart](QUICKSTART.md) · [Example YAML](examples/local.yaml) · [Developer guide](developer.md) · [MIT license](LICENSE)
+[Install and verify the CLI](QUICKSTART.md#install-the-cli) · [Bird quickstart](QUICKSTART.md#launch-the-flock) · [Example YAML](examples/local.yaml) · [Developer guide](developer.md) · [MIT license](LICENSE)
 
-[Architecture decisions](docs/adr.d/README.md) · [Changelog](CHANGELOG.md) · [Contributing and pre-commit](CONTRIBUTING.md) · [Report a security issue](SECURITY.md)
+[Architecture decisions](docs/adr.d/README.md) · [Changelog](CHANGELOG.md) · [Contributing and pre-commit](CONTRIBUTING.md) · [Test coverage](developer.md#measure-test-coverage) · [Report a security issue](SECURITY.md)
 
 ## Quickstart
 
@@ -173,6 +170,28 @@ counters and percentiles (`summary.json`), interval data (`timeseries.json`),
 `operations.csv`, `errors.csv`, and aggregated `junit.xml`. Reports and dashboard
 payloads do not include arguments, raw results, session IDs, full target paths,
 or server error text. Run, task, prompt, tool and endpoint alias names are public labels.
+
+## Structured logs and OpenTelemetry
+
+Starling writes lifecycle events as JSON lines on stderr. No external
+collector is contacted by default; `STARLING_TELEMETRY=none` disables those
+logs, not CLI diagnostics or the live flock. To see the events and check that
+the HTML report was written, try the [one-second smoke test](QUICKSTART.md#verify-the-install-and-read-the-logs).
+
+To also export logs, run spans, and workload metrics to your own OTLP/HTTP
+collector, first build with `--features otlp`, then select it at runtime.
+For example, from a checkout with the dashboard built and a local collector
+already listening on port 4318:
+
+```sh
+STARLING_TELEMETRY=stderr,otlp OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
+  cargo run --locked --features otlp -- demo --duration 2s
+```
+
+That address is the **collector**, not the MCP target or the birds' `--home`.
+It receives counts by outcome and latency histograms, not workload arguments
+or response bodies. See [how logging starts and stops](developer.md#how-logging-starts-and-stops)
+and [export settings](developer.md#process-telemetry).
 
 ## Development
 

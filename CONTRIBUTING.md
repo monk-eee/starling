@@ -10,8 +10,9 @@ agent-assisted change, also see [AGENTS.md](AGENTS.md).
 ## Before committing
 
 1. Use synthetic input and the local fixture. Never stage private workloads,
-   reports, keys, or generated web/build output. The public examples are
-   [local.yaml](examples/local.yaml) and [local.toml](examples/local.toml).
+   reports, keys, generated web/build output, or source artwork with embedded
+   authoring metadata. Use the existing [public bird image](web/src/assets/starling-bird.webp)
+   and the public examples [local.yaml](examples/local.yaml) and [local.toml](examples/local.toml).
 2. Inspect what will be published, not just what's in your editor:
 
    ```sh
@@ -19,6 +20,13 @@ agent-assisted change, also see [AGENTS.md](AGENTS.md).
    git diff --cached --stat
    git diff --cached --check
    ```
+
+   Check binary assets as well as text. Use public registry dependencies;
+   a clean clone must build without another checkout or a private package
+   feed. Before pushing, inspect author, committer and trailer addresses in
+   **every outgoing commit**, not just the working tree. Use a public address
+   or the noreply address for your hosting account; do not paste local
+   identity or credential output into a PR.
 
 3. If behavior changes, update its user or developer documentation and add a
    [changelog fragment](changelog.d/README.md). If a change alters a public
@@ -61,8 +69,11 @@ valid and an invalid commit, and checks that unstaged edits survive rejection.
   for browser behavior, include the Playwright flow. A docs-only change can
   be checked with local links and the commands it changes.
 - Give reviewers a reproduction or before/after result using the fixture.
+  For logging or bootstrap changes, try the [installed CLI outside the clone](QUICKSTART.md#verify-the-install-and-read-the-logs)
+  and run the [loopback OTLP test](developer.md#process-telemetry).
   State which platforms you actually tested and which you did not. The
-  [GitHub workflow](.github/workflows/cli.yml) covers macOS and Linux
-  containers; it does not run every check in the developer guide.
+  [GitHub workflow](.github/workflows/cli.yml) checks macOS and Linux
+  containers and publishes separate [Rust and browser coverage reports](developer.md#measure-test-coverage).
+  It does not run every check in the developer guide.
 - If the issue may be a vulnerability, follow [SECURITY.md](SECURITY.md)
   instead of posting private evidence in the PR.

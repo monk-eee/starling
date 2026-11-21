@@ -5,6 +5,11 @@ User- and operator-visible changes to Starling. New changes go in
 below establish the unreleased baseline through `ecc6ff4`; the package version
 in Cargo is not a release announcement.
 
+The [pending fragments](changelog.d/) cover toolchain, telemetry, contributor
+checks and coverage since that baseline. For the current checkout, use the
+[install and smoke test](QUICKSTART.md#install-the-cli) and the
+[logging guide](developer.md#process-telemetry).
+
 ## Unreleased
 
 ### Added

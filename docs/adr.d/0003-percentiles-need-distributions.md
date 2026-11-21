@@ -15,12 +15,14 @@ their p95s does not recover the combined distribution. The
 Merge the relevant histograms before computing a run percentile. Exclude
 session setup and discovery from workload KPIs. Show a bird's p95 as its own;
 do not derive a flock-wide p95 from the values displayed on bird tiles.
-Sending mergeable distributions could support a fleet percentile later, at
-the cost of a new wire contract and rules for missing or duplicate samples.
+Sending mergeable distributions **to the controller** would need a new wire
+contract and rules for missing or duplicate samples. A separate [opt-in
+exporter](0005-process-telemetry.md) already sends per-process duration
+histograms to an external collector, not to the flock dashboard.
 
 ## Consequences and verification
 
-There is deliberately no fleet-wide latency number today. For the local
+There is deliberately no fleet-wide latency number in the dashboard. For the local
 regression, run `cargo test --locked merge_samples_not_percentiles_and_keep_final_partial_bucket`
 after [building the dashboard](../../developer.md#build-and-run-from-a-checkout).
 The case combines unequal sample populations and checks the final partial

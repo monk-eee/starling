@@ -31,13 +31,14 @@ use crate::{
     },
     report,
     runner::Run,
+    telemetry::{Level, Telemetry},
 };
 
 #[derive(Args)]
 pub struct Bird {
     /// Public, unique name shown in the flock.
     #[arg(long, value_parser = bird_id)]
-    id: String,
+    pub(super) id: String,
     /// Controller's telemetry URL (not the dashboard URL).
     #[arg(long)]
     home: Url,
@@ -90,6 +91,7 @@ fn channel(home: &Url) -> Result<Channel> {
 }
 
 struct Reporter {
+    telemetry: Arc<Telemetry>,
     id: String,
     incarnation: u64,
     sequence: u64,
@@ -127,6 +129,7 @@ impl Reporter {
         self.send(run)
             .await
             .context("registering bird with the telemetry controller")?;
+        self.telemetry.event(Level::Info, "bird_connected");
         println!("Bird {} connected (PID {}).", self.id, std::process::id());
         if let Some(run) = run {
             run.start(StartOptions::default())?;
@@ -159,13 +162,13 @@ impl Reporter {
                 }
                 _ = tick.tick() => match self.send(run).await {
                     Ok(()) => {
-                        if lost { eprintln!("Bird {} reconnected.", self.id); }
+                        if lost { self.telemetry.event(Level::Info, "bird_reconnected"); }
                         lost = false;
                         last_ack = Instant::now();
                     }
                     Err(err) if matches!(err.code(), Code::Unavailable | Code::DeadlineExceeded | Code::Cancelled)
                         && last_ack.elapsed() < Duration::from_secs(30) => {
-                        if !lost { eprintln!("Bird {} lost contact; retrying telemetry.", self.id); }
+                        if !lost { self.telemetry.event(Level::Warn, "bird_contact_lost"); }
                         lost = true;
                     }
                     Err(err) => break Err(anyhow::Error::from(err).context("bird telemetry failed")),
@@ -178,11 +181,8 @@ impl Reporter {
             crate::finish(dir, &frame)?;
         }
         if let Err(e) = self.send(run).await {
-            eprintln!(
-                "Final heartbeat from {} was not acknowledged: {}",
-                self.id,
-                e.code()
-            );
+            self.telemetry
+                .event(Level::Error, "bird_final_heartbeat_failed");
             result?;
             return Err(e).context("sending final bird telemetry");
         }
@@ -191,7 +191,11 @@ impl Reporter {
 }
 
 impl Bird {
-    pub async fn run(self, signal: impl Future<Output = Result<()>>) -> Result<()> {
+    pub async fn run(
+        self,
+        signal: impl Future<Output = Result<()>>,
+        telemetry: Arc<Telemetry>,
+    ) -> Result<()> {
         let signal = async move {
             if self.supervised {
                 let (send, eof) = tokio::sync::oneshot::channel();
@@ -217,6 +221,7 @@ impl Bird {
             "--wait and --report require a local workload (--demo or --config)"
         );
         let reporter = Reporter {
+            telemetry: telemetry.clone(),
             client: TelemetryClient::new(channel(&self.home)?),
             id: self.id,
             incarnation: fastrand::u64(1..=u64::MAX),
@@ -234,21 +239,24 @@ impl Bird {
                     ..Default::default()
                 },
             )?;
-            let job = (Run::new(cfg), report::reserve(self.report)?);
+            let job = (Run::new(cfg, telemetry), report::reserve(self.report)?);
             fixture::alongside(listener, reporter.observe(Some(job), signal)).await
         } else {
             let job = self
                 .config
                 .map(|path| -> Result<_> {
                     Ok((
-                        Run::new(Config::read(
-                            &path,
-                            StartOptions {
-                                endpoint: self.endpoint,
-                                wait_ms: self.wait_ms,
-                                ..Default::default()
-                            },
-                        )?),
+                        Run::new(
+                            Config::read(
+                                &path,
+                                StartOptions {
+                                    endpoint: self.endpoint,
+                                    wait_ms: self.wait_ms,
+                                    ..Default::default()
+                                },
+                            )?,
+                            telemetry,
+                        ),
                         report::reserve(self.report)?,
                     ))
                 })
@@ -317,17 +325,18 @@ pub fn spawn_demos(
 pub async fn supervise(
     mut children: JoinSet<std::io::Result<std::process::ExitStatus>>,
     stop: CancellationToken,
+    telemetry: Arc<Telemetry>,
 ) {
     loop {
         tokio::select! {
             _ = stop.cancelled() => {
                 while let Some(res) = children.join_next().await {
-                    if !matches!(res, Ok(Ok(s)) if s.success()) { eprintln!("Demo bird shutdown: {res:?}"); }
+                    if !matches!(res, Ok(Ok(s)) if s.success()) { telemetry.event(Level::Error, "demo_bird_shutdown_failed"); }
                 }
                 return;
             }
-            Some(result) = children.join_next(), if !children.is_empty() => {
-                eprintln!("A demo bird exited: {result:?}. It will not be automatically replaced.");
+            Some(_) = children.join_next(), if !children.is_empty() => {
+                telemetry.event(Level::Warn, "demo_bird_unexpected_exit");
             }
         }
     }

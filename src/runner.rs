@@ -16,10 +16,11 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    config::{Config, MAX_DURATION, Protocol, StartOptions},
+    config::{Config, MAX_DURATION, Method, Protocol, StartOptions},
     mcp::Session,
     metrics::{Metrics, Outcome, Point, Summary},
     report,
+    telemetry::Telemetry,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
@@ -163,6 +164,7 @@ impl State {
 }
 
 pub struct Run {
+    pub telemetry: Arc<Telemetry>,
     defaults: Config,
     active: OnceLock<Config>,
     state: Mutex<State>,
@@ -172,7 +174,7 @@ pub struct Run {
 }
 
 impl Run {
-    pub fn new(cfg: Config) -> Arc<Self> {
+    pub fn new(cfg: Config, telemetry: Arc<Telemetry>) -> Arc<Self> {
         let info = RunInfo::from(&cfg);
         let mut state = State {
             status: Status::Ready,
@@ -187,6 +189,7 @@ impl Run {
         };
         let (feed, _) = watch::channel(Arc::new(state.frame(&info, false)));
         Arc::new(Self {
+            telemetry,
             defaults: cfg,
             active: OnceLock::new(),
             state: Mutex::new(state),
@@ -253,6 +256,7 @@ impl Run {
     async fn measured<T>(
         &self,
         key: &str,
+        _workload_method: Option<Method>,
         op: impl Future<Output = Result<T, Outcome>>,
     ) -> Option<Result<T, Outcome>> {
         let start = {
@@ -267,15 +271,17 @@ impl Run {
             .await
             .unwrap_or(Err(Outcome::Timeout));
         let latency = start.elapsed();
-        let mut s = self.state.lock().unwrap();
-        s.in_flight -= 1;
-        let at = s.elapsed();
-        s.metrics.record(
-            key,
-            at,
-            latency,
-            result.as_ref().err().copied().unwrap_or(Outcome::Success),
-        );
+        let outcome = result.as_ref().err().copied().unwrap_or(Outcome::Success);
+        {
+            let mut s = self.state.lock().unwrap();
+            s.in_flight -= 1;
+            let at = s.elapsed();
+            s.metrics.record(key, at, latency, outcome);
+        }
+        #[cfg(feature = "otlp")]
+        if let Some(method) = _workload_method {
+            self.telemetry.request(method, outcome, latency);
+        }
         Some(result)
     }
 
@@ -288,6 +294,7 @@ impl Run {
         let session = match self
             .measured(
                 startup,
+                None,
                 Session::open(&cfg.target, &cfg.tasks, cfg.load.timeout),
             )
             .await
@@ -305,7 +312,7 @@ impl Run {
             s.protocols.insert(session.version());
         }
         let discovery = if cfg.tasks.iter().any(|t| t.tool.is_some()) {
-            self.measured("tools/list", session.discover(&cfg.tasks))
+            self.measured("tools/list", None, session.discover(&cfg.tasks))
                 .await
         } else {
             Some(Ok(()))
@@ -330,7 +337,10 @@ impl Run {
         loop {
             let task = cfg.pick(&mut rng);
             let key = task.operation();
-            match self.measured(&key, session.call(task)).await {
+            match self
+                .measured(&key, Some(task.method), session.call(task))
+                .await
+            {
                 None => break,
                 Some(Err(e @ (Outcome::Transport | Outcome::Timeout))) => {
                     self.halt(false, Some(format!("{} failed: {}", key, e.label())));
@@ -373,6 +383,9 @@ impl Run {
     pub async fn execute(self: Arc<Self>, directory: PathBuf) -> Result<Arc<Frame>> {
         self.start_signal.cancelled().await;
         let start = self.state.lock().unwrap().started;
+        let trace = start
+            .map(|_| self.telemetry.start_run())
+            .unwrap_or_default();
         if let Some(start) = start {
             let run = self.clone();
             // Create and drop the workload runtime outside the controller's async context.
@@ -426,10 +439,22 @@ impl Run {
             Err(error) => {
                 frame.view.status = Status::Failed;
                 frame.view.reason = Some("report persistence failed".into());
+                self.telemetry.finish_run(
+                    trace,
+                    Status::Failed,
+                    frame.view.calls.count,
+                    frame.view.calls.failed,
+                );
                 self.feed.send_replace(Arc::new(frame));
                 return Err(error).context("writing report bundle");
             }
         };
+        self.telemetry.finish_run(
+            trace,
+            frame.view.status,
+            frame.view.calls.count,
+            frame.view.calls.failed,
+        );
         self.feed.send_replace(frame.clone());
         Ok(frame)
     }

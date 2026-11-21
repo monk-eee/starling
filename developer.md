@@ -21,6 +21,9 @@ the controller, so this tests your checkout, not a previous installation on
 and compiles the [protobuf schema](proto/flock.proto) with Rust tooling; there
 is no runtime Node dependency or system `protoc` requirement. The dashboard
 bundles the [bird artwork](web/src/assets/starling-bird.webp) for offline use.
+If Cargo reports a missing embedded dashboard, run the two npm commands
+above before retrying. To check installation rather than `cargo run`, follow
+the [out-of-checkout smoke test](QUICKSTART.md#verify-the-install-and-read-the-logs).
 
 ## Follow a bird from CLI to screen
 
@@ -36,7 +39,7 @@ local workload file -> bird -> local MCP target
 |---|---|
 | Which processes start or stop | [CLI](src/main.rs) binds the fixture and dashboard. [Bird lifecycle](src/bird.rs) spawns demo children, registers independent birds, and drains their local workloads. |
 | What the test actually sends | [Config](src/config.rs) validates one selected loopback target and the named requests. The [runner](src/runner.rs) owns the virtual users and timing; the [MCP adapter](src/mcp.rs) sends the method and checks its result. A bird is a process, not a virtual user or worker thread. |
-| What crosses the network | [flock.proto](proto/flock.proto) defines one unary `CheckIn(Heartbeat) -> Receipt` RPC. The receipt is empty: there is no remote start, stop, target assignment, or YAML upload to a bird. |
+| What a bird sends home | [flock.proto](proto/flock.proto) defines one unary `CheckIn(Heartbeat) -> Receipt` RPC. The receipt is empty: there is no remote start, stop, target assignment, or YAML upload to a bird. Optional [process telemetry](#process-telemetry) goes to a separately configured collector, not this listener. |
 | What the user sees | The [hub](src/flock.rs) keeps the latest heartbeat per ID. The [dashboard](src/dashboard.rs) serves `GET /api/v1/flock` and `/api/v1/flock/live` (WebSocket). The [flock panel](web/src/flock.tsx) renders selectable birds from those snapshots; [feed.ts](web/src/feed.ts) handles browser reconnection. |
 | Where results go | The [report writer](src/report.rs) saves the local run. The controller does not collect birds' offline bundles, merge their p95s, or replay the live roster in an export. |
 
@@ -120,6 +123,72 @@ telemetry connection does not make remote workload targets valid. If binding
 to a wildcard address inside a container, advertise the reachable DNS name
 to birds, not the wildcard printed as the listener address.
 
+## Process telemetry
+
+The [structured logger](src/telemetry.rs) and [OTLP exporter](src/telemetry/otlp.rs)
+build entirely from this checkout and public Rust crates. They observe the
+local process. They neither send work to birds nor replace the flock heartbeat.
+The runner, controller, birds and standalone fixture emit lifecycle events;
+`init` and `validate` do not initialize exporters.
+
+| Setting | Behavior |
+|---|---|
+| `STARLING_TELEMETRY` | `stderr` (default), `none`, `otlp`, or `stderr,otlp` (either order). Setting a collector origin alone does not enable export. Selecting OTLP in a binary built without the `otlp` feature fails at startup. |
+| `STARLING_LOG_LEVEL` | Minimum `info` (default), `warn`, `error`, or `off`. This filters event logs, not spans, metrics or the CLI's exit diagnostics. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Required when OTLP is selected. Use an HTTPS origin or numeric loopback HTTP for local testing. No user info, path prefix, query, or fragment. All three signals use this origin. Standard OTLP headers may carry collector credentials; keep those in the operator environment, not workload YAML. |
+
+Build the web assets first, then `cargo install --path . --locked --features otlp`.
+For an image with the exporter, use
+`docker build --build-arg STARLING_FEATURES=otlp -t starling-otlp .`.
+Inside a container, loopback means **that container**. Supervised demo birds
+inherit the controller environment; configure independent birds where they run.
+
+- **Logs:** one JSON object per line on stderr with `timestampMs`, `service`,
+  `level`, `event` and `role`. Birds include their public `birdId`. Run completion
+  includes `status`, `requests` and `failed`; when tracing is enabled the run
+  logs also include `traceId` and `spanId`. Output addresses on stdout and
+  human-readable CLI errors on stderr are separate from these records.
+- **Spans:** one `starling.run` span per started workload. There are no
+  per-request spans and no trace headers are injected into the target.
+- **Metrics:** `starling.workload.requests` is a monotonic counter.
+  `starling.workload.duration` is a histogram of measured request durations
+  **in milliseconds**. Both use `mcp.method.name` and `starling.outcome`;
+  sum non-`success` outcomes for failures. Setup/discovery, think time and
+  export are not measured requests. Each process has its own `service.instance.id`;
+  combine histogram buckets for fleet percentiles, not the heartbeat p95s.
+- **Delivery:** collecting a request measurement does not write to stderr or
+  wait for a telemetry network request.
+  The stderr queue is bounded, logs and spans are batched, and metrics export
+  periodically and on graceful shutdown. The HTTP client does not use ambient
+  proxies, follow redirects, or retry requests. Export is best effort, not a
+  delivery receipt. A detected shutdown/write error produces a CLI diagnostic
+  and nonzero exit; it does not rewrite an already-saved workload report.
+
+Run `cargo test --locked --all-features --test cli telemetry::` to exercise a
+real CLI against a disposable protobuf receiver, without cloud credentials.
+The [data-handling proposal](docs/adr.d/0005-process-telemetry.md) lists the
+fields that must stay out of exported telemetry.
+
+### How logging starts and stops
+
+1. The [CLI entry point](src/main.rs) reads the subcommand and assigns a
+   role: `runner` for headless work, `controller` for a dashboard, `bird` for
+   a worker, or `fixture` for a standalone test server. `init` and `validate`
+   skip the log writer and exporters, even if collector settings are present.
+2. Before starting work, [logging setup](src/telemetry.rs) resolves the
+   destinations and level. The default opens a bounded stderr queue; only an
+   explicit OTLP selection constructs the three [SDK providers](src/telemetry/otlp.rs).
+   `process_started` means the process is starting work, **not** that a
+   collector received anything.
+3. The [runner](src/runner.rs) starts a span when a workload actually starts.
+   `run_finished` records its outcome and counts after the report write is
+   attempted. A report-write failure records `failed`, not `completed`.
+   A bird may keep sending heartbeats after its workload ends.
+4. On graceful exit the process emits `process_finished` or `process_failed`,
+   then drains its writer and shuts down its providers. A final export error
+   can still make the CLI exit nonzero after a successful local run. Check
+   the **exit status**, not just the last JSON event.
+
 ## Test changes
 
 From the clone, after building the web assets:
@@ -145,13 +214,56 @@ ports, select a bird, disconnect and rejoin it, load a YAML scenario, and
 open a report offline. Use `STARLING_BROWSER_CHANNEL=chrome` if testing
 with an installed Chrome instead.
 
+### Measure test coverage
+
+The [CLI workflow](.github/workflows/cli.yml) measures two different things on
+Linux. Open a [workflow run](https://github.com/monk-eee/starling/actions/workflows/cli.yml)
+for the covered/total counts per file. Download `coverage-rust` or
+`coverage-dashboard` for LCOV with individual missed lines. The dashboard
+artifact also has a browsable `html/index.html`. There is no combined score.
+
+| Check | What runs | Minimum |
+|---|---|---|
+| Rust | Unit and CLI tests, including their instrumented child processes and the two Unix shutdown tests | 75% of executable lines |
+| Dashboard | Chromium drives the real CLI and embedded dashboard, including reload and opening an exported report offline | 90% of executable lines and 80% of branches |
+
+From the clone on macOS or Linux, with Python 3, Node 22 and the pinned Rust
+toolchain available:
+
+```sh
+npm --prefix web ci
+npm --prefix web run build
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.8.7 --locked
+python3 tests/coverage.py rust
+
+(cd web && npx playwright install chromium)  # On a fresh Linux runner use install --with-deps chromium.
+python3 tests/coverage.py dashboard
+```
+
+The commands use the same [collector and thresholds](tests/coverage.py) as
+CI. Results go in `target/coverage/{rust,dashboard}/`. Rust counts each
+executable source line once, not once per overlapping function. A child
+that is forcibly killed doesn't get to flush its profile. Keep Rust
+unit tests in `tests.rs` under their module so test assertions don't inflate
+the number. Dashboard instrumentation runs on the authored TS/TSX before
+bundling, in a separate build; it doesn't replace your normal CLI or web
+assets. Unvisited modules still count. A missing source file, missing browser
+capture, failed test, or below-minimum result fails the check.
+
+These are whole-suite floors, not per-file or changed-line guarantees. Rust
+branch coverage isn't measured. Generated protobuf, dependencies, tests,
+CSS and build scripts aren't in the denominators. The separate mutual-TLS
+container check isn't folded into either number. Coverage shows what ran,
+not whether every outcome was asserted or the service survived a long soak.
+
 ### Verify two Linux containers
 
 With Docker, Python 3, and OpenSSL on the host, run the same integration
 check as [CI](.github/workflows/cli.yml) from the repository root:
 
 ```sh
-docker build -t starling .
+docker build --build-arg STARLING_FEATURES=otlp -t starling .
 docker pull node:22-bookworm-slim
 python3 tests/flock_containers.py starling node:22-bookworm-slim
 ```
@@ -168,8 +280,9 @@ between processes; it is not a benchmark of a production MCP target.
 - **A reporting flock is not a distributed scheduler.** Start work on each
   bird; there is no controller-side dispatch or global concurrency budget.
   [Telemetry boundary](docs/adr.d/0002-telemetry-is-not-dispatch.md)
-- **A run percentile is local.** No fleet histogram is transmitted, so the
-  dashboard cannot show a correct fleet p95.
+- **The flock dashboard has no fleet p95.** Its gRPC heartbeat contains a
+  bird's p95, not its histogram. A separately configured collector can
+  aggregate OTLP histograms; that result is not fed back into the dashboard.
   [Measurement boundary](docs/adr.d/0003-percentiles-need-distributions.md)
 - **Duration support is not soak qualification.** The CLI accepts runs up
   to seven days. The [bounded-timeline regression](src/metrics.rs) simulates

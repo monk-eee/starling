@@ -6,6 +6,44 @@ permissions:
   contents: read
 
 jobs:
+  coverage:
+    name: Coverage (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [rust, dashboard]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix web ci
+      - name: Prepare Rust coverage
+        if: matrix.suite == 'rust'
+        run: |
+          python3 -B tests/test_coverage.py
+          npm --prefix web run build
+          rustup component add llvm-tools-preview
+          cargo install cargo-llvm-cov --version 0.8.7 --locked
+      - name: Install Chromium
+        if: matrix.suite == 'dashboard'
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - run: python3 tests/coverage.py ${{ matrix.suite }}
+      - name: Show per-file coverage
+        if: ${{ !cancelled() && hashFiles(format('target/coverage/{0}/summary.md', matrix.suite)) != '' }}
+        run: cat target/coverage/${{ matrix.suite }}/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-${{ matrix.suite }}
+          path: target/coverage/${{ matrix.suite }}
+          if-no-files-found: error
+
   macos:
     runs-on: macos-latest
     timeout-minutes: 20
@@ -27,21 +65,26 @@ jobs:
           cd "$(mktemp -d)"
           starling init
           starling validate
-          starling demo --duration 1s --report result
-          test -s result/index.html
+          starling demo --duration 1s --report first-run 2>events.log || { cat events.log >&2; exit 1; }
+          test -s first-run/index.html
+          jq -se --slurpfile report first-run/summary.json '
+            map(select(.event == "run_finished")) |
+            length == 1 and .[0].status == "completed" and
+            .[0].requests > 0 and .[0].requests == $report[0].calls.count and .[0].failed == 0
+          ' events.log
       - name: Verify the native CLI, scenarios and shutdown
         run: cargo test --locked --release --workspace --all-features
 
   linux-container:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Build and test the isolated CLI
         run: |
-          docker build -t starling-ci .
+          docker build --build-arg STARLING_FEATURES=otlp -t starling-ci .
           docker run --rm --network none --entrypoint sh starling-ci -ec '
             starling init
             starling validate
