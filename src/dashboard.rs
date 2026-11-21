@@ -24,6 +24,7 @@ use crate::{
     metrics::Point,
     report,
     runner::{Frame, Overview, Run},
+    telemetry::Level,
 };
 
 #[derive(Clone)]
@@ -58,6 +59,7 @@ pub async fn serve(
     )?;
     println!("Dashboard: http://{address}");
     println!("Bird telemetry: {}", hub.endpoint);
+    let telemetry = run.telemetry.clone();
     let (controller, mut runs) = watch::channel(Slot {
         generation: 1,
         run,
@@ -149,7 +151,7 @@ pub async fn serve(
         }
     };
     let supervise = async {
-        bird::supervise(children, shutdown.clone()).await;
+        bird::supervise(children, shutdown.clone(), telemetry).await;
         rpc_stop.cancel();
         Ok(())
     };
@@ -248,14 +250,19 @@ fn prepare_run(controller: &Controller, workload: Option<Config>) -> Response {
             Ok(dir) => {
                 *slot = Slot {
                     generation: slot.generation + 1,
-                    run: Run::new(workload.unwrap_or_else(|| slot.run.config().clone())),
+                    run: Run::new(
+                        workload.unwrap_or_else(|| slot.run.config().clone()),
+                        slot.run.telemetry.clone(),
+                    ),
                     dir,
                 };
                 status = StatusCode::ACCEPTED;
                 true
             }
-            Err(e) => {
-                eprintln!("Could not reserve the next report: {e}");
+            Err(_) => {
+                slot.run
+                    .telemetry
+                    .event(Level::Error, "report_reservation_failed");
                 status = StatusCode::INTERNAL_SERVER_ERROR;
                 false
             }

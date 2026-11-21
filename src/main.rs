@@ -7,8 +7,9 @@ mod mcp;
 mod metrics;
 mod report;
 mod runner;
+mod telemetry;
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -17,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use config::{Config, DEFAULT_PATH, StartOptions, loopback_addr};
 use runner::{Run, Status};
+use telemetry::{Level, Logging, Telemetry};
 
 #[derive(Parser)]
 #[command(
@@ -94,7 +96,36 @@ struct RunOutput {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    match Cli::parse().command {
+    let command = Cli::parse().command;
+    // The collector client and the mTLS flock must share the same TLS provider.
+    #[cfg(feature = "otlp")]
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("could not select the Starling TLS provider"))?;
+    let (role, bird) = match &command {
+        Command::Bird(args) => ("bird", Some(args.id.as_str())),
+        Command::Demo { output, .. } | Command::Run { output, .. } => {
+            (if output.web { "controller" } else { "runner" }, None)
+        }
+        Command::Fixture { .. } => ("fixture", None),
+        Command::Init { .. } | Command::Validate { .. } => ("cli", None),
+    };
+    let logging = Logging::open(role, bird, role != "cli").await?;
+    logging.events.event(Level::Info, "process_started");
+    let result = execute(command, logging.events.clone()).await;
+    if result.is_err() {
+        logging.events.event(Level::Error, "process_failed");
+    } else {
+        logging.events.event(Level::Info, "process_finished");
+    }
+    match (result, logging.shutdown().await) {
+        (Err(command), Err(flush)) => Err(command.context(format!("telemetry: {flush}"))),
+        (result, flushed) => result.and(flushed),
+    }
+}
+
+async fn execute(command: Command, telemetry: Arc<Telemetry>) -> Result<()> {
+    match command {
         Command::Init { file } => {
             config::write_starter(&file)?;
             println!(
@@ -102,7 +133,7 @@ async fn main() -> Result<()> {
                 file.display()
             );
         }
-        Command::Bird(args) => args.run(shutdown_signal()?).await?,
+        Command::Bird(args) => args.run(shutdown_signal()?, telemetry).await?,
         Command::Demo {
             options,
             output,
@@ -117,7 +148,13 @@ async fn main() -> Result<()> {
             println!("Demo fixture: http://{address}/mcp");
             fixture::alongside(
                 listener,
-                run_workload(cfg, output, Some(address), birds.unwrap_or(0), signal),
+                run_workload(
+                    Run::new(cfg, telemetry),
+                    output,
+                    Some(address),
+                    birds.unwrap_or(0),
+                    signal,
+                ),
             )
             .await?;
         }
@@ -153,7 +190,7 @@ async fn main() -> Result<()> {
             output,
         } => {
             run_workload(
-                Config::read(&config, options)?,
+                Run::new(Config::read(&config, options)?, telemetry),
                 output,
                 None,
                 0,
@@ -190,13 +227,12 @@ fn shutdown_signal() -> Result<impl Future<Output = Result<()>>> {
 }
 
 async fn run_workload(
-    cfg: Config,
+    run: Arc<Run>,
     output: RunOutput,
     demo_fixture: Option<SocketAddr>,
     birds: u8,
     signal: impl Future<Output = Result<()>>,
 ) -> Result<()> {
-    let run = Run::new(cfg);
     let listener = if output.web {
         let dashboard_port = if demo_fixture.is_some() { 0 } else { 8787 };
         Some(

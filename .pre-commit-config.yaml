@@ -17,10 +17,10 @@ repos:
         pass_filenames: false
 
       - id: local-only-paths
-        name: Keep local workloads and generated output out of Git
+        name: Keep source artwork, local workloads and generated output out of Git
         language: fail
-        entry: Unstage these files; only the two built-in fixture examples are public workloads.
-        files: '^(out/|target/|web/(node_modules|dist|test-results)/|examples/(?!local\.(yaml|toml)$)|starling\.(ya?ml|toml)$)'
+        entry: Unstage these local inputs; use the reviewed dashboard artwork and the two public fixture examples.
+        files: '^(assets/|out/|target/|web/(node_modules|dist|test-results)/|examples/(?!local\.(yaml|toml)$)|starling\.(ya?ml|toml)$)'
 
       - id: private-key-header
         name: Reject PEM private key headers in text files

@@ -10,6 +10,8 @@
 !proto/flock.proto
 !src/
 !src/*.rs
+!src/telemetry/
+!src/telemetry/otlp.rs
 !examples/
 !examples/local.yaml
 !examples/local.toml

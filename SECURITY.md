@@ -17,3 +17,12 @@ expose the browser as a substitute for the
 [mutually authenticated telemetry listener](developer.md#connect-across-machines).
 Treat run, tool, task, prompt and endpoint alias names as public: redaction
 of payloads does not remove a secret a user has placed in a label.
+
+The optional [OTLP collector](developer.md#process-telemetry) is a fourth
+address, independent of the dashboard, target and heartbeat listener. Use a
+collector you control and a public-safe bird ID; the ID is visible in both
+the roster and process telemetry. Collector credentials belong in the
+operator environment, never in URLs, workload files, screenshots or example
+commands. The structured exporter uses fixed fields; that protection does
+not make an entire terminal transcript, raw report, or original image safe
+to publish.

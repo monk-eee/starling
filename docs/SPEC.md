@@ -8,7 +8,10 @@
 
 **Read this as a roadmap, not a CLI reference.** The current CLI runs YAML or
 TOML scenarios against a loopback Streamable HTTP target. Birds report their
-own runs over gRPC; the controller does not assign them work. Use the
+own runs over gRPC; the controller does not assign them work. The
+[bootstrap guide](../QUICKSTART.md#install-the-cli) builds one Rust binary
+with an embedded dashboard. [Process logging](../developer.md#process-telemetry)
+is local by default, with optional OTLP/HTTP export. Use the
 [workload reference](../README.md#configure-a-workload) for supported methods
 and limits, [known gaps](../developer.md#known-gaps) for unimplemented goals,
 and the [ADR index](adr.d/README.md) for decisions under review.
@@ -70,7 +73,8 @@ The backend, load engine, controller, workers, and CLI will be Rust. The fronten
 
 - Interactive browser mode for developers.
 - Headless mode with exit codes and SLO gates.
-- JSON, CSV, JUnit XML, HTML, and Prometheus/OpenTelemetry outputs.
+- JSON, CSV, JUnit XML and HTML reports; optional OpenTelemetry export.
+  Native Prometheus output is a roadmap goal, not a current CLI option.
 
 ### 2.2 Secondary goals
 
@@ -92,9 +96,12 @@ The backend, load engine, controller, workers, and CLI will be Rust. The fronten
 
 ## 3. MCP baseline
 
-Starling should initially target the stable MCP 2026-07-28 protocol while retaining compatibility with 2025-11-25 servers through version negotiation. The official  [[github.com]](https://github.com/modelcontextprotocol/rust-sdk) uses Tokio and reports support for MCP 2026-07-28 with compatibility for 2025-11-25 and earlier releases. [[github.com]](https://github.com/modelcontextprotocol/rust-sdk)
+The [MCP adapter](../src/mcp.rs) uses the [public Rust SDK](https://github.com/modelcontextprotocol/rust-sdk).
+The workload selects automatic discovery and negotiation, or an explicit
+2025-11-25 handshake; see the [workload reference](../README.md#configure-a-workload).
 
-MCP separates its JSON-RPC data layer from its transport layer, and its primary server primitives include tools, resources, prompts, and notifications. Starling must therefore collect both: [[modelconte...rotocol.io]](https://modelcontextprotocol.io/docs/draft/learn/architecture)
+The [MCP architecture](https://modelcontextprotocol.io/specification/2025-11-25/architecture)
+separates JSON-RPC operations from their transport. The design distinguishes:
 
 - **Logical MCP operation metrics**, such as `tools/call`.
 - **Physical transport metrics**, such as HTTP requests, SSE reconnects, bytes, and connection setup.
@@ -463,7 +470,9 @@ Plain Text
 
 ### 6.1 Rust workspace
 
-Plain Text
+The layout below is a proposed split, **not** a set of repositories to clone.
+Today the [CLI package](../Cargo.toml) and [dashboard](../web/) build from this
+checkout using their respective lockfiles.
 
 starling/
 
@@ -521,7 +530,7 @@ Local persistence | SQLite in WAL mode
 
 Report time series | Compressed columnar or chunked JSON data
 
-Logging/tracing | `tracing` and OpenTelemetry
+Logging/tracing | Structured stderr events; optional OTLP/HTTP logs, run spans and request metrics ([current behavior](../developer.md#process-telemetry))
 
 CLI | Clap
 
@@ -966,6 +975,10 @@ task_completion_time  = completed_at - acknowledged_at
 
 ### 9.2 Dimensions
 
+These are proposed analysis dimensions. Today's OTLP request metrics expose
+only the MCP method and outcome as metric attributes, with process identity
+on the resource. They do not export tool, scenario or run names.
+
 Bounded labels:
 
 - Run.
@@ -1004,7 +1017,9 @@ The proposed aggregate frames contain:
 - Reservoir-sampled traces.
 - Agent resource statistics.
 
-The controller merges histograms and calculates percentiles from the merged distribution. It must never average worker p95 values.
+Such a controller would merge histograms, never average worker p95 values.
+Today an external collector can combine the exported OTLP histogram buckets;
+the live dashboard does not consume that external result.
 
 ### 9.4 Generator health
 

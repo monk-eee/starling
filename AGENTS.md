@@ -13,6 +13,9 @@
   reports out of public changes. Use the built-in fixture for examples and
   tests. Don't register a whole new example directory as public just to make
   a local scenario compile.
+- For bootstrap or logging changes, verify the [installed CLI smoke test](QUICKSTART.md#verify-the-install-and-read-the-logs)
+  and the [process telemetry boundary](docs/adr.d/0005-process-telemetry.md).
+  Check binary metadata and outgoing Git identities as well as text before publishing.
 - For a user-visible change, update the relevant guide and add a
   [changelog fragment](changelog.d/README.md). The
   [pre-commit setup](CONTRIBUTING.md#optional-pre-commit-hook) is opt-in;
