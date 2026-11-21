@@ -20,6 +20,7 @@ const frame = z.object({
     max_duration_ms: z.number().positive().optional(), bucket_secs: z.number().int().positive().optional(),
     requests: z.array(z.string()).optional(),
     endpoint: z.string().optional(), endpoint_names: z.array(z.string()).optional(),
+    protocol: z.string().optional(), protocol_revisions: z.array(z.string()).optional(),
   }),
   status: z.enum(["ready", "running", "stopping", "completed", "stopped", "failed"]),
   reason: z.string().nullable(), elapsed_ms: z.number(), sessions: z.number(), in_flight: z.number(),

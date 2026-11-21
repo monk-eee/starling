@@ -11,6 +11,7 @@ this directory for choices that a future change might otherwise undo.
 | [0003: Compute percentiles from distributions](0003-percentiles-need-distributions.md) | Proposed | Latency aggregation, fleet-wide charts |
 | [0004: Keep workload payloads out of results](0004-keep-payloads-out-of-results.md) | Proposed | Report formats, live metrics, labels, diagnostics |
 | [0005: Export process telemetry without exporting workloads](0005-process-telemetry.md) | Proposed | Structured logs, OTLP signals, exporter opt-in and allowed fields |
+| [0006: Report versioned conformance evidence](0006-versioned-conformance-evidence.md) | Proposed | Rule IDs, revision profiles, verdicts and finite distributed check campaigns |
 
 These are proposals, **not historical approvals**. Each product record links
 to the implementation and a check for the current behavior. A passing test

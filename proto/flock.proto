@@ -6,6 +6,16 @@ service Telemetry {
   rpc CheckIn (Heartbeat) returns (Receipt);
 }
 
+// Workers choose their own target. This separate, finite collector accepts results only.
+service CheckCollector {
+  rpc Submit (CheckSubmission) returns (Receipt);
+}
+
+message CheckSubmission {
+  string campaign = 1;
+  bytes report_json = 2;
+}
+
 message Heartbeat {
   string bird_id = 1;
   fixed64 incarnation = 2;

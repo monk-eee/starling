@@ -72,7 +72,7 @@ fn file(dir: &Path, name: &str, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn json(dir: &Path, name: &str, data: &impl Serialize) -> Result<()> {
+pub fn json(dir: &Path, name: &str, data: &impl Serialize) -> Result<()> {
     file(dir, name, &serde_json::to_vec_pretty(data)?)
 }
 

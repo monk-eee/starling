@@ -89,6 +89,36 @@ def check(image, probe_image):
             command("docker", "start", a)
             until(live_pair)
             print("Two independent Linux birds authenticated with mTLS: two live, one stale, two live again; no duplicate or untrusted bird.")
+
+            results = root / "results"
+            results.mkdir()
+            results.chmod(0o777)
+            collector = create(network, ["--network-alias", "check-hub", *identity("check-hub", "serverAuth", 5),
+                               "--mount", f"type=bind,source={results},target=/evidence"], image,
+                               ["collect", "--expect", "west,east", "--listen", "0.0.0.0:8790",
+                                "--deadline-secs", "90", "--report", "/evidence/fleet"])
+            deadline = time.monotonic() + 15
+            while True:
+                campaign = next((line.removeprefix("Check campaign: ") for line in command("docker", "logs", collector).splitlines()
+                                 if line.startswith("Check campaign: ")), None)
+                if campaign:
+                    break
+                if time.monotonic() > deadline:
+                    raise RuntimeError("conformance collector did not announce its campaign")
+                time.sleep(.2)
+            workers = [create(network, identity(name, "clientAuth", serial), image,
+                              ["check", "--demo", "--all-protocols", "--id", name, "--home", "https://check-hub:8790",
+                               "--campaign", campaign, "--report", "/work/evidence"])
+                       for name, serial in [("west", 6), ("east", 7)]]
+            for cid in [*workers, collector]:
+                assert command("docker", "wait", cid, timeout=100) == "0", command("docker", "logs", cid)
+            combined = json.loads((results / "fleet/fleet-conformance.json").read_text())
+            assert combined["campaign"] == campaign and combined["verdict"] == "pass" and not combined["missing_birds"]
+            assert set(combined["workers"]) == {"west", "east"}
+            for report in combined["workers"].values():
+                assert {p["requested"] for p in report["profiles"]} == set(combined["expected_revisions"])
+                assert all(p["verdict"] == "pass" for p in report["profiles"])
+            print("Two separate containers submitted every selected conformance profile over mutual TLS.")
         finally:
             for cid in reversed(containers):
                 command("docker", "rm", "-f", cid)

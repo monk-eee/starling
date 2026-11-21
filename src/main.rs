@@ -1,5 +1,7 @@
 mod bird;
+mod check_fleet;
 mod config;
+mod conformance;
 mod dashboard;
 mod fixture;
 mod flock;
@@ -33,6 +35,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run a bounded MCP conformance profile once; never invokes tools.
+    Check(conformance::Check),
+    /// Collect conformance results from an expected set of independent workers.
+    Collect(check_fleet::Collect),
     /// Create a starter workload in a new YAML or TOML file.
     Init {
         #[arg(value_name = "FILE", default_value = DEFAULT_PATH)]
@@ -103,6 +109,8 @@ async fn main() -> Result<()> {
         .install_default()
         .map_err(|_| anyhow::anyhow!("could not select the Starling TLS provider"))?;
     let (role, bird) = match &command {
+        Command::Check(args) => ("check", args.id.as_deref()),
+        Command::Collect(_) => ("collector", None),
         Command::Bird(args) => ("bird", Some(args.id.as_str())),
         Command::Demo { output, .. } | Command::Run { output, .. } => {
             (if output.web { "controller" } else { "runner" }, None)
@@ -126,6 +134,8 @@ async fn main() -> Result<()> {
 
 async fn execute(command: Command, telemetry: Arc<Telemetry>) -> Result<()> {
     match command {
+        Command::Check(args) => args.run().await?,
+        Command::Collect(args) => args.run(shutdown_signal()?).await?,
         Command::Init { file } => {
             config::write_starter(&file)?;
             println!(
@@ -161,7 +171,7 @@ async fn execute(command: Command, telemetry: Arc<Telemetry>) -> Result<()> {
         Command::Validate { config, options } => {
             let cfg = Config::read(&config, options)?;
             println!(
-                "Valid: {} users, {} workload threads, {} weighted requests; duration {}, wait {}, timeout {}; endpoint {} ({})",
+                "Valid: {} users, {} workload threads, {} weighted requests; duration {}, wait {}, timeout {}; endpoint {} ({}); requested MCP {}",
                 cfg.load.users,
                 cfg.load.threads,
                 cfg.tasks.len(),
@@ -170,6 +180,7 @@ async fn execute(command: Command, telemetry: Arc<Telemetry>) -> Result<()> {
                 humantime::format_duration(cfg.load.timeout),
                 cfg.target.selected.as_deref().unwrap_or("default"),
                 cfg.target.endpoint().origin().ascii_serialization(),
+                cfg.target.protocol.as_str(),
             );
         }
         Command::Fixture { listen } => {

@@ -203,6 +203,14 @@ impl Hub {
     }
 
     pub async fn serve(self, stop: CancellationToken) -> Result<()> {
+        self.serve_with_checks(stop, None).await
+    }
+
+    pub async fn serve_with_checks(
+        self,
+        stop: CancellationToken,
+        inbox: Option<crate::check_fleet::Inbox>,
+    ) -> Result<()> {
         let mut server = Server::builder()
             .max_concurrent_streams(16)
             .concurrency_limit_per_connection(4)
@@ -211,7 +219,15 @@ impl Hub {
             server = server.tls_config(tls)?;
         }
         server
-            .add_service(TelemetryServer::new(self.flock).max_decoding_message_size(2048))
+            .add_optional_service(
+                inbox
+                    .is_none()
+                    .then(|| TelemetryServer::new(self.flock).max_decoding_message_size(2048)),
+            )
+            .add_optional_service(inbox.map(|i| {
+                rpc::check_collector_server::CheckCollectorServer::new(i)
+                    .max_decoding_message_size(32 * 1024)
+            }))
             .serve_with_incoming_shutdown(
                 TcpListenerStream::new(self.listener),
                 stop.cancelled_owned(),

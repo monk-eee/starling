@@ -39,9 +39,61 @@ local workload file -> bird -> local MCP target
 |---|---|
 | Which processes start or stop | [CLI](src/main.rs) binds the fixture and dashboard. [Bird lifecycle](src/bird.rs) spawns demo children, registers independent birds, and drains their local workloads. |
 | What the test actually sends | [Config](src/config.rs) validates one selected loopback target and the named requests. The [runner](src/runner.rs) owns the virtual users and timing; the [MCP adapter](src/mcp.rs) sends the method and checks its result. A bird is a process, not a virtual user or worker thread. |
-| What a bird sends home | [flock.proto](proto/flock.proto) defines one unary `CheckIn(Heartbeat) -> Receipt` RPC. The receipt is empty: there is no remote start, stop, target assignment, or YAML upload to a bird. Optional [process telemetry](#process-telemetry) goes to a separately configured collector, not this listener. |
+| What a bird sends home | [flock.proto](proto/flock.proto) defines `Telemetry.CheckIn` for the live roster and `CheckCollector.Submit` for a separate, finite conformance campaign. Neither receipt contains a command or target. Optional [OTLP process telemetry](#process-telemetry) uses neither RPC. |
 | What the user sees | The [hub](src/flock.rs) keeps the latest heartbeat per ID. The [dashboard](src/dashboard.rs) serves `GET /api/v1/flock` and `/api/v1/flock/live` (WebSocket). The [flock panel](web/src/flock.tsx) renders selectable birds from those snapshots; [feed.ts](web/src/feed.ts) handles browser reconnection. |
 | Where results go | The [report writer](src/report.rs) saves the local run. The controller does not collect birds' offline bundles, merge their p95s, or replay the live roster in an export. |
+
+The [protocol selector](README.md#test-an-mcp-protocol-revision) shares the
+backend revision list with the dashboard. The configured revision controls
+session startup and is stored in `run.json`; `summary.json` also records the
+revisions of sessions actually established. A refused pin does not count
+as a successfully negotiated revision. The [wire tests](tests/cli/protocol.rs)
+check the startup message, subsequent request headers and fallback behavior.
+Supervised demo birds inherit the protocol requested at launch; the browser
+controls only the controller's local run.
+
+### Extending the conformance suite
+
+The [revision registry](src/config.rs) drives the YAML/CLI parser, dashboard
+selector, exact-version matrix, and catalog contract. The [core suite](src/conformance.rs)
+uses the same [session adapter](src/mcp.rs) as load tests but opens **one**
+session per revision, probes each advertised catalog once, and closes it.
+No configured tool arguments, target paths, server error text or catalog
+contents enter the report. The reported bird ID must be public.
+
+| Stable rule | Evidence in `mcp.streamable-http.core.v1` |
+|---|---|
+| `lifecycle.revision` | Successful typed `initialize` or `server/discover`, requested vs negotiated revision and a link to the applicable spec. A counter-offer cannot pass an exact pin. |
+| `catalog.tools` | If advertised, an uncached first `tools/list` page matches the expected result type; decoded tool input schemas have `type: object`. An empty list is valid. |
+| `catalog.prompts` | If advertised, the server returns a typed first `prompts/list` page. No prompts are expanded. |
+| `catalog.resources` | If advertised, the first `resources/list` page decodes and its resource URIs parse as absolute URIs. Their contents are not read. |
+| `transport.close` | The SDK closed the client transport. This is an operational observation, not proof of server-side cleanup. |
+
+For `2026-07-28` the catalog rules also check for the complete result marker
+and presence of both [caching hints](https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching).
+Older revisions do not need those fields. This is a **bounded interoperability
+profile**, not a raw JSON Schema validator or official certification. It does
+not check every wire field (the SDK normalizes some values), every page,
+authorization, sampling, notification delivery or the semantics of tool answers.
+`skip` means an optional capability wasn't advertised; `not_run` means startup
+prevented a probe. A timeout, transport failure or otherwise indeterminate
+response is `inconclusive`, not proof that the server broke the specification.
+
+To support a new revision, confirm it in the pinned SDK and published spec,
+register it with its catalog requirements, implement any changed lifecycle
+or rule, and add positive and counterexample cases to the [wire tests](tests/cli/protocol.rs).
+Use stable rule IDs. If evidence semantics or required rules change, version
+the suite and update the worker validator and dashboard decoder together;
+do not reinterpret an old pass. Load metrics and their report schema are separate.
+
+The [result collector](src/check_fleet.rs) only accepts the current campaign,
+listed worker IDs, matching suite/schema, and complete rows for the expected
+revisions. Identical resubmissions are idempotent; conflicting ones are
+rejected. Workers are trusted observers within the configured TLS trust
+domain, not cryptographic proof that a particular target behaved correctly.
+The [fleet tests](tests/cli/conformance.rs) check separate worker processes
+and missing evidence; the [container test](tests/flock_containers.py) runs
+workers and the collector in distinct network namespaces with mutual TLS.
 
 ### Heartbeats and identity
 
@@ -128,7 +180,7 @@ to birds, not the wildcard printed as the listener address.
 The [structured logger](src/telemetry.rs) and [OTLP exporter](src/telemetry/otlp.rs)
 build entirely from this checkout and public Rust crates. They observe the
 local process. They neither send work to birds nor replace the flock heartbeat.
-The runner, controller, birds and standalone fixture emit lifecycle events;
+The runner, controller, birds, check workers, result collector and standalone fixture emit process lifecycle events;
 `init` and `validate` do not initialize exporters.
 
 | Setting | Behavior |
@@ -173,7 +225,8 @@ fields that must stay out of exported telemetry.
 
 1. The [CLI entry point](src/main.rs) reads the subcommand and assigns a
    role: `runner` for headless work, `controller` for a dashboard, `bird` for
-   a worker, or `fixture` for a standalone test server. `init` and `validate`
+   a worker, `fixture` for a standalone test server, or `check` / `collector`
+   for conformance commands. `init` and `validate`
    skip the log writer and exporters, even if collector settings are present.
 2. Before starting work, [logging setup](src/telemetry.rs) resolves the
    destinations and level. The default opens a bounded stderr queue; only an

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, terminal, useFeed } from "./feed";
 import { Chart, errors, percentiles, throughput } from "./chart";
+import { Conformance, checkReport, type CheckReport } from "./conformance";
 import { Flock } from "./flock";
 import { LoadForm, SettingsSummary, durationLabel, type StartOptions } from "./load-settings";
 import starlingBird from "./assets/starling-bird.webp?inline";
@@ -15,6 +16,19 @@ function Dashboard() {
   const { current, offline, connection, error } = useFeed();
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [checked, setChecked] = useState<{ generation: number | undefined; report: CheckReport } | null>(null);
+  const [checking, setChecking] = useState(false);
+  async function check(options: { endpoint?: string; protocol?: string; all_protocols: boolean }) {
+    setChecking(true); setActionError(""); setChecked(null);
+    try {
+      const response = await fetch(`${api}/check`, { method: "POST",
+        headers: { "X-Starling-Control": "1", "Content-Type": "application/json" }, body: JSON.stringify(options) });
+      if (!response.ok) throw new Error(`Could not check conformance: HTTP ${response.status}.`);
+      setChecked({ generation: current?.generation, report: checkReport.parse(await response.json()) });
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : "The controller is unreachable.");
+    } finally { setChecking(false); }
+  }
   async function loadYaml(file: File) {
     setPending(true);
     setActionError("");
@@ -54,7 +68,7 @@ function Dashboard() {
   const settings = run && run.threads !== undefined && run.wait_ms !== undefined && run.timeout_ms !== undefined
     ? { users: run.users, threads: run.threads, duration_ms: run.duration_ms, wait_ms: run.wait_ms, timeout_ms: run.timeout_ms }
     : null;
-  const disabled = pending || connection !== "Connected";
+  const disabled = pending || checking || connection !== "Connected";
   return <main>
     <nav>
       <strong><img src={starlingBird} alt="" width={60} height={40} />Starling</strong>
@@ -66,7 +80,9 @@ function Dashboard() {
       <header className="intro">
         <div><p className="eyebrow">{offline ? "Saved report" : "Local workload"}</p><h1>{current.run.name}</h1>
           <p className="endpoint">{current.run.endpoint && current.run.endpoint !== "default" && `${current.run.endpoint}: `}{current.run.target_origin} &middot; Streamable HTTP
-            {current.protocols.length > 0 && ` / MCP ${current.protocols.join(", ")}`}</p></div>
+            {current.status !== "ready" && current.run.protocol && <span> &middot; Requested MCP: {current.run.protocol}</span>}
+            {current.protocols.length > 0 ? <span> &middot; Negotiated MCP: {current.protocols.join(", ")}</span>
+              : terminal(current.status) && <span> &middot; No negotiated revision recorded</span>}</p></div>
         <div className="actions">
           <span className={`badge ${current.status}`} aria-label="Run status" role="status">{current.status}</span>
           {!offline && current.status === "ready" && <button disabled={disabled}
@@ -92,8 +108,11 @@ function Dashboard() {
       {settings && (!offline && current.status === "ready"
         ? <LoadForm key={current.generation} initial={settings} maxDurationMs={current.run.max_duration_ms ?? 900000}
             disabled={disabled} endpoint={current.run.endpoint ?? "default"} endpoints={current.run.endpoint_names ?? []}
-            onStart={options => void control("start", options)} />
+            protocol={current.run.protocol} revisions={current.run.protocol_revisions}
+            onStart={options => void control("start", options)} onCheck={options => void check(options)} />
         : <SettingsSummary settings={settings} />)}
+      {checking && <p role="status">Checking MCP conformance...</p>}
+      {!offline && checked && checked.generation === current.generation && <Conformance report={checked.report} />}
       <section className="kpis" aria-label="Run metrics">
         {[
           ["Workload requests", number(current.calls.count, 0), `${number(current.calls.failed, 0)} failed`],

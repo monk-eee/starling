@@ -23,7 +23,7 @@ use tonic::{
 use url::{Host, Url};
 
 use crate::{
-    config::{Config, StartOptions, cli_millis},
+    config::{Config, Protocol, StartOptions, cli_millis},
     fixture,
     flock::{
         Credentials, bird_id,
@@ -48,6 +48,9 @@ pub struct Bird {
     /// Select a named endpoint from the locally supplied workload.
     #[arg(long, requires = "config")]
     endpoint: Option<String>,
+    /// Require an MCP revision for this bird's workload, or "auto" to negotiate.
+    #[arg(long, value_name = "REVISION")]
+    protocol: Option<Protocol>,
     /// Override this bird's per-user pause; 0 disables it.
     #[arg(long = "wait", value_name = "TIME", value_parser = cli_millis, allow_negative_numbers = true)]
     wait_ms: Option<u64>,
@@ -61,7 +64,7 @@ pub struct Bird {
     report: Option<PathBuf>,
 }
 
-fn channel(home: &Url) -> Result<Channel> {
+pub(crate) fn channel(home: &Url) -> Result<Channel> {
     ensure!(
         home.host().is_some()
             && home.username().is_empty()
@@ -217,8 +220,10 @@ impl Bird {
             }
         };
         ensure!(
-            (self.report.is_none() && self.wait_ms.is_none()) || self.demo || self.config.is_some(),
-            "--wait and --report require a local workload (--demo or --config)"
+            (self.report.is_none() && self.wait_ms.is_none() && self.protocol.is_none())
+                || self.demo
+                || self.config.is_some(),
+            "--wait, --report and --protocol require a local workload (--demo or --config)"
         );
         let reporter = Reporter {
             telemetry: telemetry.clone(),
@@ -234,6 +239,7 @@ impl Bird {
                 StartOptions {
                     users: Some(1),
                     threads: Some(1),
+                    protocol: self.protocol,
                     wait_ms: self.wait_ms,
                     duration_ms: Some(15000),
                     ..Default::default()
@@ -251,6 +257,7 @@ impl Bird {
                                 &path,
                                 StartOptions {
                                     endpoint: self.endpoint,
+                                    protocol: self.protocol,
                                     wait_ms: self.wait_ms,
                                     ..Default::default()
                                 },
@@ -271,7 +278,7 @@ pub fn spawn_demos(
     home: &str,
     address: SocketAddr,
     report_dir: &std::path::Path,
-    wait: Duration,
+    config: &Config,
     stop: CancellationToken,
 ) -> Result<JoinSet<std::io::Result<std::process::ExitStatus>>> {
     let mut children = JoinSet::new();
@@ -283,7 +290,7 @@ pub fn spawn_demos(
         "launch demo birds only on a plaintext loopback hub; start certified birds independently for TLS"
     );
     let exe = std::env::current_exe()?;
-    let wait = humantime::format_duration(wait).to_string();
+    let wait = humantime::format_duration(config.load.wait).to_string();
     for n in 1..=count {
         let mut child = Command::new(&exe)
             .args([
@@ -293,6 +300,8 @@ pub fn spawn_demos(
                 "--home",
                 home,
                 "--demo",
+                "--protocol",
+                config.target.protocol.as_str(),
                 "--wait",
                 &wait,
                 "--supervised",
