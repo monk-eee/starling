@@ -1,4 +1,46 @@
 use super::*;
+use crate::acceptance::{Criteria, GateStatus};
+
+#[test]
+fn performance_gate_uses_merged_workload_samples_and_exact_boundaries() {
+    let ms = Duration::from_millis;
+    let mut m = Metrics::new(ms(1000));
+    for _ in 0..970 {
+        m.record("tools/call/fast", ms(1), ms(1), Outcome::Success);
+    }
+    for _ in 0..29 {
+        m.record("task/prompts/get/slow", ms(1), ms(2), Outcome::Success);
+    }
+    m.record("task/prompts/get/slow", ms(1), ms(2), Outcome::Assertion);
+    // Setup errors and their very long latencies must not change the workload gate.
+    for _ in 0..100 {
+        m.record("initialize", ms(1), ms(800), Outcome::Timeout);
+    }
+    let calls = m.summarize().0;
+    for (op, passes) in [("<", false), ("<=", true)] {
+        let criteria: Criteria = toml::from_str(&format!(
+            "error_rate = '{op} 0.1%'\np95 = '{op} 1ms'\np99 = '{op} 2ms'\nmin_requests = 1000"
+        ))
+        .unwrap();
+        let result = criteria.evaluate(&calls, true);
+        assert_eq!(result.status == GateStatus::Passed, passes);
+        let rows: Vec<_> = result.checks.iter().map(|c| (c.metric, c.passed)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("error_rate", Some(passes)),
+                ("p95", Some(passes)),
+                ("p99", Some(passes)),
+                ("min_requests", Some(true))
+            ]
+        );
+        let partial = criteria.evaluate(&calls, false);
+        assert!(
+            partial.status == GateStatus::Incomplete
+                && partial.checks.iter().all(|c| c.passed.is_none())
+        );
+    }
+}
 
 #[test]
 fn week_timeline_stays_bounded_and_commits_each_live_sample_once() {

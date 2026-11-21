@@ -113,6 +113,18 @@ function Dashboard() {
         : <SettingsSummary settings={settings} />)}
       {checking && <p role="status">Checking MCP conformance...</p>}
       {!offline && checked && checked.generation === current.generation && <Conformance report={checked.report} />}
+      {run?.assert && <section className="panel check-result" aria-label="Performance gate">
+        <h2>Performance gate{current.acceptance && `: ${current.acceptance.status}`}</h2>
+        {current.acceptance ? <div className="table-wrap"><table>
+          <thead><tr><th>Metric</th><th>Required</th><th>Observed</th><th>Result</th></tr></thead>
+          <tbody>{current.acceptance.checks.map(c => <tr key={c.metric}>
+            <th scope="row">{c.metric}</th><td>{c.expected}</td>
+            <td>{c.observed === null ? "No samples" : `${c.observed} ${c.unit}`}</td>
+            <td>{c.passed === null ? "Not evaluated" : c.passed ? "Pass" : "Fail"}</td>
+          </tr>)}</tbody>
+        </table></div> : <p>Checked after the workload finishes: {Object.entries(run.assert)
+          .map(([metric, value]) => `${metric} ${metric === "min_requests" ? ">= " : ""}${value}`).join("; ")}</p>}
+      </section>}
       <section className="kpis" aria-label="Run metrics">
         {[
           ["Workload requests", number(current.calls.count, 0), `${number(current.calls.failed, 0)} failed`],

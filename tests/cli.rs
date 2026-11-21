@@ -475,6 +475,7 @@ async fn real_sessions_produce_consistent_redacted_offline_reports() {
     let ops = &s["operations"];
     assert_eq!(s["protocols"][0], "2025-11-25");
     assert_eq!(s["status"], "completed");
+    assert!(s.get("acceptance").is_none() && s["run"].get("assert").is_none());
     assert_eq!(ops["initialize"]["count"], 2);
     assert_eq!(ops["tools/list"]["count"], 2);
     assert_eq!(s["in_flight"], 0);
@@ -518,6 +519,51 @@ async fn real_sessions_produce_consistent_redacted_offline_reports() {
 }
 
 #[tokio::test]
+async fn performance_thresholds_gate_the_exit_and_persist_scheduled_measurements() {
+    let (mut child, target) = fixture().await;
+    let yaml = format!(
+        "run: {{ name: Deployment smoke, duration: 1s, seed: 1 }}\n\
+         target: {{ url: '{target}', protocol: '2025-11-25' }}\n\
+         load: {{ users: 1, wait: 100ms, timeout: 3s }}\n\
+         tasks: [{{ tool: status, weight: 1, assert_exists: /content/0/text }}]\n"
+    );
+    for (minimum, p95, pass) in [(1, "15s", true), (100, "1ms", false)] {
+        let workload = format!(
+            "{yaml}\nassert:\n  error_rate: '< 0.1%'\n  p95: '< {p95}'\n  p99: '< 15s'\n  min_requests: {minimum}\n"
+        );
+        let (work, s) = run_file(workload, "deployment.yaml", &[], pass).await;
+        let dir = work.path().join("report");
+        assert_eq!(s["calls"]["failed"], 0);
+        assert_eq!(s["status"], if pass { "completed" } else { "failed" });
+        assert_eq!(
+            s["acceptance"]["status"],
+            if pass { "passed" } else { "failed" }
+        );
+        let rows = s["acceptance"]["checks"].as_array().unwrap();
+        let check = |name| rows.iter().find(|r| r["metric"] == name).unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(check("min_requests")["observed"], s["calls"]["count"]);
+        assert_eq!(check("p95")["observed"], s["calls"]["p95_ms"]);
+        assert_eq!(check("p99")["observed"], s["calls"]["p99_ms"]);
+        assert_eq!(check("error_rate")["observed"].as_f64(), Some(0.0));
+        assert_eq!(check("min_requests")["passed"], pass);
+        assert_eq!(check("p95")["passed"], pass);
+        let thresholds = &read(&dir, "run.json")["assert"];
+        assert_eq!(thresholds["min_requests"], minimum);
+        assert_eq!(thresholds["error_rate"], "< 0.1%");
+        let xml = fs::read_to_string(dir.join("junit.xml")).unwrap();
+        assert!(xml.contains("<testcase name=\"performance.acceptance\">"));
+        assert_eq!(xml.contains("<failure "), !pass);
+        if !pass {
+            assert!(s["reason"].as_str().unwrap().contains("min_requests"));
+            assert!(xml.contains("expected &lt; 1ms"));
+        }
+        assert!(dir.join("index.html").is_file());
+    }
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
 async fn discovery_assertion_semantic_and_rpc_failures_are_distinct() {
     let (mut child, url) = fixture().await;
     let cfg = config(&url)
@@ -535,9 +581,21 @@ async fn discovery_assertion_semantic_and_rpc_failures_are_distinct() {
         ),
         ("tool = 'reject'", "tools/call/reject", "tool_error"),
     ] {
-        let (work, summary) = run(format!("{header}[[tasks]]\nweight = 1\n{task}\n"), false).await;
+        let (work, summary) = run(
+            format!("{header}[assert]\nerror_rate = '<= 100%'\n[[tasks]]\nweight = 1\n{task}\n"),
+            false,
+        )
+        .await;
         assert_eq!(summary["protocols"][0], "2026-07-28", "{summary}");
         assert_eq!(summary["status"], "failed");
+        assert_eq!(
+            summary["acceptance"]["status"],
+            if category == "capability" {
+                "incomplete"
+            } else {
+                "passed"
+            }
+        );
         assert!(
             summary["operations"][op]["outcomes"][category]
                 .as_u64()
@@ -557,11 +615,24 @@ async fn discovery_assertion_semantic_and_rpc_failures_are_distinct() {
 async fn hung_handshake_times_out_without_dispatching_tools() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let (_, summary) = run(
-        config(&format!("http://{}/mcp", listener.local_addr().unwrap())).replace("3s", "100ms"),
+        format!(
+            "{}\n[assert]\nerror_rate = '< 1%'\np95 = '< 1s'\nmin_requests = 1\n",
+            config(&format!("http://{}/mcp", listener.local_addr().unwrap()))
+                .replace("3s", "100ms")
+        ),
         false,
     )
     .await;
     assert_eq!(summary["calls"]["count"], 0);
+    assert_eq!(summary["acceptance"]["status"], "incomplete");
+    assert!(summary["reason"].as_str().unwrap().contains("initialize"));
+    let rows = summary["acceptance"]["checks"].as_array().unwrap();
+    assert!(rows.iter().all(|c| c["passed"].is_null()));
+    assert!(
+        rows.iter()
+            .filter(|c| c["metric"] != "min_requests")
+            .all(|c| c["observed"].is_null())
+    );
     assert!(
         summary["operations"]["initialize"]["outcomes"]["timeout"]
             .as_u64()
@@ -581,6 +652,74 @@ mod signals {
             .status()
             .unwrap();
         assert!(sent.success());
+    }
+
+    #[tokio::test]
+    async fn interrupted_gated_bird_reports_incomplete_before_exiting_nonzero() {
+        let work = tempdir().unwrap();
+        timeout(Duration::from_secs(16), async {
+            let mut controller = starling()
+                .current_dir(work.path())
+                .args(["demo", "--web", "--report", "controller"])
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut lines = BufReader::new(controller.stdout.take().unwrap()).lines();
+            let target = announced(&mut lines, "Demo fixture: ").await;
+            let url = announced(&mut lines, "Dashboard: ").await;
+            let home = announced(&mut lines, "Bird telemetry: ").await;
+            let workload = SAMPLE
+                .replace("http://127.0.0.1:8081/mcp", &target)
+                .replace("30s", "1m")
+                .replace("wait = 0", "wait = '150ms'");
+            fs::write(
+                work.path().join("bird.toml"),
+                format!("{workload}\n[assert]\nmin_requests = 1\n"),
+            )
+            .unwrap();
+            let mut bird = starling()
+                .current_dir(work.path())
+                .args([
+                    "bird",
+                    "--id",
+                    "wing",
+                    "--home",
+                    &home,
+                    "--config",
+                    "bird.toml",
+                    "--report",
+                    "wing",
+                ])
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let api = format!("{url}/api/v1/flock");
+            let http = dashboard_client();
+            loop {
+                let roster = snapshot(&http, &api).await;
+                if roster["birds"][0]["requests"]
+                    .as_u64()
+                    .is_some_and(|n| n > 0)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            terminate(&bird);
+            assert_eq!(bird.wait().await.unwrap().code(), Some(1));
+            let s = read(&work.path().join("wing"), "summary.json");
+            assert_eq!(s["acceptance"]["status"], "incomplete");
+            assert!(s["acceptance"]["checks"][0]["observed"].as_u64().unwrap() >= 1);
+            assert!(s["acceptance"]["checks"][0]["passed"].is_null());
+            let roster = snapshot(&http, &api).await;
+            assert_eq!(roster["birds"][0]["state"], "failed");
+            assert_eq!(roster["birds"][0]["failed"], 0);
+            assert_eq!(roster["birds"][0]["requests"], s["calls"]["count"]);
+            controller.kill().await.unwrap();
+        })
+        .await
+        .expect("gated bird did not drain and report");
     }
 
     #[tokio::test]

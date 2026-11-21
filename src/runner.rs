@@ -16,6 +16,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    acceptance::{Criteria, GateResult},
     config::{Config, MAX_DURATION, Method, Protocol, StartOptions},
     mcp::Session,
     metrics::{Metrics, Outcome, Point, Summary},
@@ -68,6 +69,8 @@ pub struct RunInfo {
     pub timeout_ms: u64,
     pub seed: u64,
     pub requests: Vec<String>,
+    #[serde(rename = "assert", skip_serializing_if = "Option::is_none")]
+    pub acceptance: Option<Criteria>,
 }
 
 impl From<&Config> for RunInfo {
@@ -93,6 +96,7 @@ impl From<&Config> for RunInfo {
             timeout_ms: cfg.load.timeout.as_millis() as u64,
             seed: cfg.run.seed,
             requests: cfg.tasks.iter().map(|t| t.operation()).collect(),
+            acceptance: cfg.acceptance,
         }
     }
 }
@@ -104,6 +108,8 @@ pub struct Overview {
     pub run: RunInfo,
     pub status: Status,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acceptance: Option<GateResult>,
     pub elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_interval: Option<Point>,
@@ -142,6 +148,11 @@ impl State {
         let elapsed = self.elapsed();
         self.metrics.seal(elapsed, finish);
         let (calls, operations) = self.metrics.summarize();
+        let acceptance = if finish {
+            self.finalize(&calls, info.acceptance.as_ref())
+        } else {
+            None
+        };
         self.sequence += 1;
         Frame {
             view: Overview {
@@ -150,6 +161,7 @@ impl State {
                 run: info.clone(),
                 status: self.status,
                 reason: self.failure.clone(),
+                acceptance,
                 elapsed_ms: elapsed.as_millis() as u64,
                 open_interval: if finish {
                     None
@@ -164,6 +176,28 @@ impl State {
             },
             series: self.metrics.series.clone(),
         }
+    }
+
+    fn finalize(&mut self, calls: &Summary, criteria: Option<&Criteria>) -> Option<GateResult> {
+        let gate =
+            criteria.map(|c| c.evaluate(calls, !self.stopped_by_user && self.failure.is_none()));
+        if self.failure.is_none() {
+            self.failure = if calls.failed > 0 {
+                Some("one or more workload requests failed".into())
+            } else if !self.stopped_by_user && calls.count == 0 {
+                Some("no workload requests completed before the deadline".into())
+            } else {
+                gate.as_ref().and_then(GateResult::failure)
+            };
+        }
+        self.status = if self.failure.is_some() {
+            Status::Failed
+        } else if self.stopped_by_user {
+            Status::Stopped
+        } else {
+            Status::Completed
+        };
+        gate
     }
 }
 
@@ -421,27 +455,11 @@ impl Run {
                 }
             }
         }
-        let mut frame = {
-            let mut s = self.state.lock().unwrap();
-            let (calls, _) = s.metrics.summarize();
-            if s.failure.is_none() {
-                s.failure = if calls.failed > 0 {
-                    Some("one or more workload requests failed".into())
-                } else if !s.stopped_by_user && calls.count == 0 {
-                    Some("no workload requests completed before the deadline".into())
-                } else {
-                    None
-                };
-            }
-            s.status = if s.failure.is_some() {
-                Status::Failed
-            } else if s.stopped_by_user {
-                Status::Stopped
-            } else {
-                Status::Completed
-            };
-            s.frame(&self.config().into(), true)
-        };
+        let mut frame = self
+            .state
+            .lock()
+            .unwrap()
+            .frame(&self.config().into(), true);
         // Publish terminal success only after the offline report is readable.
         let frame = match report::write(&directory, &frame) {
             Ok(()) => Arc::new(frame),

@@ -244,6 +244,13 @@ fields that must stay out of exported telemetry.
 
 ## Test changes
 
+Keep both CLI gates independent of pipeline providers: the caller orchestrates
+`check` and `run`, consumes their exit statuses, and publishes their existing
+report directories. The [deployment example](README.md#use-conformance-and-performance-as-deployment-gates)
+uses no provider-specific API. Workload [acceptance criteria](src/acceptance.rs)
+are evaluated once, after drain, against the same `calls` summary used for the
+report, never against live ticks or a fleet-wide average.
+
 From the clone, after building the web assets:
 
 ```sh

@@ -7,6 +7,13 @@ const summary = z.object({
   count: z.number(), failed: z.number(), outcomes: z.record(z.string(), z.number()),
   p50_ms: latency, p95_ms: latency, p99_ms: latency,
 });
+const acceptance = z.object({
+  status: z.enum(["passed", "failed", "incomplete"]),
+  checks: z.array(z.object({
+    metric: z.string(), expected: z.string(), unit: z.string(),
+    observed: z.number().nullable(), passed: z.boolean().nullable(),
+  })),
+});
 const point = z.object({
   second: z.number(), span_ms: z.number().positive(), calls: z.number(), failed: z.number(),
   p50_ms: latency, p95_ms: latency, p99_ms: latency,
@@ -21,10 +28,13 @@ const frame = z.object({
     requests: z.array(z.string()).optional(),
     endpoint: z.string().optional(), endpoint_names: z.array(z.string()).optional(),
     protocol: z.string().optional(), protocol_revisions: z.array(z.string()).optional(),
+    assert: z.object({ error_rate: z.string().optional(), p95: z.string().optional(),
+      p99: z.string().optional(), min_requests: z.number().optional() }).optional(),
   }),
   status: z.enum(["ready", "running", "stopping", "completed", "stopped", "failed"]),
   reason: z.string().nullable(), elapsed_ms: z.number(), sessions: z.number(), in_flight: z.number(),
   protocols: z.array(z.string()), calls: summary, operations: z.record(z.string(), summary),
+  acceptance: acceptance.optional(),
   series: z.array(point), open_interval: point.optional(),
 });
 const message = frame.extend({ type: z.enum(["snapshot", "tick"]) });

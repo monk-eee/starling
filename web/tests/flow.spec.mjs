@@ -237,7 +237,8 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     const yaml = ("# " + ".".repeat(2500) + "\n" + sample)
       .replace(`url: ${actualEndpoint}`, `url: http://127.0.0.1:1/mcp\n  endpoints: { candidate: "${actualEndpoint}" }`)
       .replace('protocol: "2025-11-25"', 'protocol: "2025-03-26"')
-      .replace("30s","3s").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION");
+      .replace("30s","3s").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION")
+      + "\nassert:\n  p95: '< 15s'\n  min_requests: 1\n";
     const upload = page.getByLabel("Load YAML");
     await upload.setInputFiles({name:"broken.yaml",mimeType:"application/yaml",buffer:Buffer.from("run: [")});
     await expect(page.getByRole("alert")).toContainText("Could not load workload:");
@@ -248,6 +249,8 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     await expect(status).toHaveText("ready");
     await expect(page.getByRole("spinbutton",{name:"Duration",exact:true})).toHaveValue("3");
     await expect(page.getByRole("combobox",{name:"MCP protocol revision"})).toHaveValue("2025-03-26");
+    const gate = page.getByRole("region", {name: "Performance gate"});
+    await expect(gate).toContainText("min_requests >= 1");
     await page.getByRole("combobox",{name:"Endpoint",exact:true}).selectOption("candidate");
     await page.getByRole("button",{name:"Start run"}).click();
     await expect(status).toHaveText("running");
@@ -260,9 +263,27 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     expect(complete.run.protocol).toBe("2025-03-26");
     expect(complete.protocols).toEqual(["2025-03-26"]);
     expect(complete.calls.failed).toBe(0);
+    await expect(gate.getByRole("heading")).toHaveText("Performance gate: passed");
+    expect(complete.acceptance.status).toBe("passed");
     await expect.poll(async () => (await roster()).find(b => b.id === "bird-01")?.state, {timeout: 20000}).toBe("completed");
     const childReport = JSON.parse(await readFile(join(report,"birds","bird-01","summary.json"),"utf8"));
     expect(childReport.run).toMatchObject({ wait_ms: 375, protocol: "2025-06-18" });
     expect(childReport.protocols).toEqual(["2025-06-18"]);
+
+    await page.getByRole("button", {name:"Configure next run"}).click();
+    await expect(status).toHaveText("ready");
+    await page.getByRole("spinbutton",{name:"Duration",exact:true}).fill("60");
+    await page.getByRole("button",{name:"Start run"}).click();
+    await expect.poll(async () => (await (await request.get(`${url}/api/v1/runs/local`)).json()).calls.count).toBeGreaterThan(0);
+    await page.getByRole("button",{name:"Stop run"}).click();
+    await expect(status).toHaveText("failed");
+    await expect(gate.getByRole("heading")).toHaveText("Performance gate: incomplete");
+    await expect(gate.getByRole("row", { name: /min_requests/ })).toContainText("Not evaluated");
+
+    await captureCoverage(page, info, "before-gated-report");
+    await page.context().setOffline(true);
+    await page.goto(pathToFileURL(join(report, "index.html")).href);
+    await expect(gate.getByRole("heading")).toHaveText("Performance gate: passed");
+    await expect(gate.getByRole("row", { name: /min_requests/ })).toContainText(`${complete.calls.count} requests`);
   } finally { await Promise.all(children.reverse().map(stopChild)); }
 });

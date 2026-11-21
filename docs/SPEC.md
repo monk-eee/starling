@@ -158,6 +158,11 @@ Behavior:
 
 #### Headless mode
 
+For the implemented headless gate use the top-level workload
+[`assert` mapping](../README.md#use-conformance-and-performance-as-deployment-gates).
+There is no `--fail-on-slo` flag; the more general selectors, stage gates and
+flags below are proposals.
+
 Shell
 
 starling run ./tests/search_workload \
@@ -692,7 +697,9 @@ This mirrors Locust’s useful model of per-user setup, weighted tasks, sequenti
 
 The TOML below illustrates the proposed configuration. Today's YAML/TOML
 accepts one `target.protocol` per run, not a `protocol_versions` list;
-see the [runnable example](../examples/local.yaml).
+see the [runnable example](../examples/local.yaml). For current workload-wide
+limits use `[assert]` in TOML (`assert:` in YAML), not the proposed `[[slo]]`
+per-operation selectors below.
 
 TOML
 

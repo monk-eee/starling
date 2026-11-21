@@ -184,6 +184,10 @@ pass. The collector does not send workloads or commands.
 
 ## Reports and shutdown
 
+For deployment verification, run the [separate conformance and workload
+acceptance gates](README.md#use-conformance-and-performance-as-deployment-gates).
+The workload command saves its report even when a performance threshold fails.
+
 | Run | Where to open its offline report |
 |---|---|
 | `demo --web --birds 2` child | `out/run-…/birds/bird-01/index.html` (and `bird-02/`) under terminal 1's working directory. The parent is the controller's **initial** report directory. |
