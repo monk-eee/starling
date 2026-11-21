@@ -111,6 +111,21 @@ pub fn write(dir: &Path, frame: &Frame) -> Result<()> {
             }
         }
     }
+    if let Some(gate) = &frame.view.acceptance {
+        cases.push_str("  <testcase name=\"performance.acceptance\">");
+        if let Some(reason) = gate.failure() {
+            failures += 1;
+            write!(
+                cases,
+                "<failure message=\"{}\"/>",
+                reason
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('"', "&quot;")
+            )?;
+        }
+        cases.push_str("</testcase>\n");
+    }
     let infrastructure_failure = failures == 0 && frame.view.status == Status::Failed;
     if infrastructure_failure {
         failures += 1;
@@ -118,7 +133,9 @@ pub fn write(dir: &Path, frame: &Frame) -> Result<()> {
     }
     let xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuite name=\"starling\" tests=\"{}\" failures=\"{failures}\">\n{cases}</testsuite>\n",
-        frame.view.operations.len() + usize::from(infrastructure_failure)
+        frame.view.operations.len()
+            + usize::from(frame.view.acceptance.is_some())
+            + usize::from(infrastructure_failure)
     );
     file(dir, "operations.csv", ops.as_bytes())?;
     file(dir, "errors.csv", errors.as_bytes())?;

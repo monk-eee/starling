@@ -178,11 +178,16 @@ impl Reporter {
                 }
             }
         };
-        if !finished && let Some((run, dir)) = &work {
+        let result = if !finished && let Some((run, dir)) = &work {
             run.stop();
-            let frame = execute.await?;
-            crate::finish(dir, &frame)?;
-        }
+            // Report the drained verdict to the controller even if local acceptance failed.
+            execute
+                .await
+                .and_then(|frame| crate::finish(dir, &frame))
+                .and(result)
+        } else {
+            result
+        };
         if let Err(e) = self.send(run).await {
             self.telemetry
                 .event(Level::Error, "bird_final_heartbeat_failed");

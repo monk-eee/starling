@@ -5,6 +5,35 @@ fn sample() -> Config {
 }
 
 #[test]
+fn malformed_acceptance_criteria_cannot_silently_disable_the_gate() {
+    for bad in [
+        "{}",
+        "null",
+        "['< 0.1%']",
+        "{p90: '< 2s'}",
+        "{p95: null, min_requests: 1}",
+        "{p99: '500ms'}",
+        "{p95: '< 500'}",
+        "{p95: '> 1s'}",
+        "{p99: '< -2ms'}",
+        "{error_rate: '< 0.1'}",
+        "{error_rate: '< 101%'}",
+        "{error_rate: '< -1%'}",
+        "{error_rate: '< NaN%'}",
+        "{error_rate: '< 0.1234567%'}",
+        "{min_requests: 0}",
+        "{min_requests: -1}",
+        "{min_requests: 1.5}",
+    ] {
+        let yaml = format!("{STARTER_YAML}\nassert: {bad}\n");
+        assert!(
+            Config::from_yaml(&yaml, Default::default()).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn optional_wait_accepts_zero_and_preserves_explicit_durations_in_both_formats() {
     for (value, ms) in [
         (None, 0),

@@ -51,6 +51,12 @@ pub struct Config {
     pub tasks: Vec<Task>,
     #[serde(default)]
     pub conformance: ConformanceOptions,
+    #[serde(
+        default,
+        rename = "assert",
+        deserialize_with = "crate::acceptance::Criteria::from_map"
+    )]
+    pub acceptance: Option<crate::acceptance::Criteria>,
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -461,6 +467,9 @@ impl Config {
     }
 
     fn validate(&mut self) -> Result<()> {
+        if let Some(criteria) = &self.acceptance {
+            criteria.validate()?;
+        }
         Protocol::validate_matrix(&self.conformance.revisions)?;
         ensure!(
             !self.run.name.trim().is_empty()

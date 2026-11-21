@@ -1,3 +1,4 @@
+mod acceptance;
 mod bird;
 mod check_fleet;
 mod config;
@@ -182,6 +183,12 @@ async fn execute(command: Command, telemetry: Arc<Telemetry>) -> Result<()> {
                 cfg.target.endpoint().origin().ascii_serialization(),
                 cfg.target.protocol.as_str(),
             );
+            if let Some(criteria) = cfg.acceptance {
+                println!(
+                    "Performance assertions: {}",
+                    serde_json::to_string(&criteria)?
+                );
+            }
         }
         Command::Fixture { listen } => {
             let listener = TcpListener::bind(listen).await.context("binding fixture")?;
@@ -290,6 +297,19 @@ fn finish(dir: &std::path::Path, frame: &runner::Frame) -> Result<()> {
         frame.view.calls.failed,
         dir.join("index.html").display()
     );
+    if let Some(gate) = &frame.view.acceptance {
+        println!("Performance gate: {}", gate.status.label());
+        for check in &gate.checks {
+            println!(
+                "  {check} ({})",
+                match check.passed {
+                    Some(true) => "pass",
+                    Some(false) => "fail",
+                    None => "not evaluated",
+                }
+            );
+        }
+    }
     if frame.view.status == Status::Failed {
         bail!("{}", frame.view.reason.as_deref().unwrap_or("run failed"));
     }

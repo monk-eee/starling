@@ -220,11 +220,62 @@ Overall percentiles come from merged HDR histograms, **not an average of tool
 percentiles**. WebSocket subscribers get an initial snapshot and numbered
 updates; reconnects and skipped updates get a fresh snapshot.
 
-Reports include the standalone HTML dashboard, public run metadata (`run.json`),
+Reports include the standalone HTML dashboard (`index.html`), public run metadata (`run.json`),
 counters and percentiles (`summary.json`), interval data (`timeseries.json`),
 `operations.csv`, `errors.csv`, and aggregated `junit.xml`. Reports and dashboard
 payloads do not include arguments, raw results, session IDs, full target paths,
 or server error text. Run, task, prompt, tool and endpoint alias names are public labels.
+
+### Use conformance and performance as deployment gates
+
+The caller deploys the service and publishes artifacts. Starling only
+checks the target and reports a result. Use `starling init deployment.yaml`
+for a [starter](examples/local.yaml), set the target and cases to exercise,
+and enable this optional top-level mapping:
+
+```yaml
+assert:
+  error_rate: "< 0.1%"
+  p95: "< 500ms"
+  p99: "< 1000ms"
+  min_requests: 100
+```
+
+From the deployed server's loopback network namespace, run the two commands
+against the same configured target. Either nonzero exit stops this example:
+
+```sh
+set -eu
+artifacts="${ARTIFACT_DIR:-$(mktemp -d)}"  # Use a fresh directory per attempt.
+starling check --config deployment.yaml --all-protocols --report "$artifacts/conformance"
+starling run --config deployment.yaml --headless --report "$artifacts/workload"
+```
+
+Use `--all-protocols` only if the service must support every listed revision;
+otherwise choose just the expected ones. Publish `conformance/conformance.json`
+and the workload bundle: `index.html`, `run.json`, `summary.json`,
+`timeseries.json`, `operations.csv`, `errors.csv`, and `junit.xml`. Configure
+the caller to retain available artifacts **even on failure**. A gate failure
+does not prevent the workload report from being written.
+
+- Set any nonempty subset of the four rules. Upper bounds accept `<` or `<=`;
+  `<` fails on equality. Error rate is a decimal percentage from 0 to 100
+  (up to six decimal places), not a fraction. Latencies require duration
+  units. `min_requests` is a positive integer and the minimum is inclusive.
+- `starling validate --config deployment.yaml` checks the rules and prints
+  their normalized limits without contacting the target.
+- The gate uses the final aggregate of completed scheduled requests, including
+  failures. It excludes setup and discovery. It does not average task, interval
+  or bird percentiles, or compare rounded dashboard labels. `min_requests`
+  counts all scheduled requests, not one minimum per weighted task. Incomplete
+  runs and runs without samples cannot pass.
+- Rules are additional to existing failures: an allowed error rate does not
+  forgive a failed tool assertion, handshake, timeout or report write. Without
+  `assert`, existing run and exit behavior is unchanged.
+- `run.json` records the effective limits. `summary.json` records
+  `acceptance.status` (`passed`, `failed`, or `incomplete`) and each rule's
+  expected value, observed value, unit and result. The offline dashboard and
+  JUnit report expose the same verdict. Conformance remains a separate gate.
 
 ## Structured logs and OpenTelemetry
 
