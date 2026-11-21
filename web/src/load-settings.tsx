@@ -4,7 +4,7 @@ import type { FormEvent } from "react";
 export type LoadSettings = {
   users: number; threads: number; duration_ms: number; wait_ms: number; timeout_ms: number;
 };
-export type StartOptions = Partial<LoadSettings> & { endpoint?: string };
+export type StartOptions = Partial<LoadSettings> & { endpoint?: string; protocol?: string };
 
 const durationUnits = [
   { ms: 86400000, label: "days" }, { ms: 3600000, label: "hours" },
@@ -26,9 +26,11 @@ function Slider({ id, label, initial, hint }: { id: string; label: string; initi
   </div>;
 }
 
-export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints, onStart }: {
+export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints, protocol, revisions, onStart, onCheck }: {
   initial: LoadSettings; maxDurationMs: number; disabled: boolean; endpoint: string; endpoints: string[];
+  protocol: string | undefined; revisions: string[] | undefined;
   onStart: (options: StartOptions) => void;
+  onCheck: (options: {endpoint?: string; protocol?: string; all_protocols: boolean}) => void;
 }) {
   const [unit, setUnit] = useState(() => unitFor(initial.duration_ms));
   function submit(e: FormEvent<HTMLFormElement>) {
@@ -37,6 +39,14 @@ export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints
     const options: StartOptions = {};
     const choice = data.get("endpoint");
     if (typeof choice === "string" && choice !== endpoint) options.endpoint = choice;
+    const revision = data.get("protocol");
+    const button = e.nativeEvent instanceof SubmitEvent ? e.nativeEvent.submitter : null;
+    if (button instanceof HTMLButtonElement && button.name === "check") {
+      const all = button.value === "all";
+      onCheck({ ...options, ...(!all && typeof revision === "string" && { protocol: revision }), all_protocols: all });
+      return;
+    }
+    if (typeof revision === "string" && revision !== protocol) options.protocol = revision;
     for (const key of ["users", "threads", "duration_ms", "wait_ms", "timeout_ms"] as const) {
       const value = Number(data.get(key));
       const effective = key === "duration_ms" ? Math.round(value * unit) : value;
@@ -51,6 +61,11 @@ export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints
         {endpoints.length > 0 && <div className="load-field"><label htmlFor="endpoint">Endpoint</label>
           <select id="endpoint" name="endpoint" defaultValue={endpoint}>{["default", ...endpoints].map(e =>
             <option key={e}>{e}</option>)}</select><small>One YAML target per run</small></div>}
+        {protocol && revisions && <div className="load-field"><label htmlFor="protocol">MCP protocol revision</label>
+          <select id="protocol" name="protocol" defaultValue={protocol} aria-describedby="protocol-hint">
+            <option value="auto">Auto (negotiate)</option>
+            {revisions.map(v => <option key={v}>{v}</option>)}
+          </select><small id="protocol-hint">Choose a date to require that exact revision.</small></div>}
         <Slider id="users" label="Concurrent users" initial={initial.users} hint="One MCP session per user." />
         <Slider id="threads" label="Worker threads" initial={initial.threads} hint="Starling threads, not server threads." />
         <div className="load-field"><label htmlFor="duration_ms">Duration</label>
@@ -68,6 +83,11 @@ export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints
           <input id="timeout_ms" name="timeout_ms" type="number" min="50" max="15000" required
             defaultValue={initial.timeout_ms} /><small>50 to 15,000 ms per operation</small></div>
       </div>
+      {protocol && revisions && <div className="check-actions">
+        <button type="submit" name="check" value="one" formNoValidate>Check revision</button>
+        <button type="submit" name="check" value="all" formNoValidate>Check all revisions</button>
+        <small>One read-only conformance pass. No tools are invoked and no load run starts.</small>
+      </div>}
     </fieldset>
   </form>;
 }

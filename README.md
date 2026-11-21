@@ -8,7 +8,8 @@
 
 Load-test a **local MCP server** and see which tools slow down or fail. Watch
 throughput, latency, and errors in the browser, then reopen the same dashboard
-as an offline HTML report.
+as an offline HTML report. For compatibility rather than load, run a
+[one-shot or distributed MCP conformance check](#check-mcp-conformance).
 
 [Install and verify the CLI](QUICKSTART.md#install-the-cli) · [Bird quickstart](QUICKSTART.md#launch-the-flock) · [Example YAML](examples/local.yaml) · [Developer guide](developer.md) · [MIT license](LICENSE)
 
@@ -28,6 +29,32 @@ Its request count and p95 come from that worker process. Both birds start
 their own 15-second fixture runs immediately. Seeing **2 reporting, 0 running**
 afterward means both finished and are still reporting. **Start run** controls
 a *separate* workload on the dashboard host; it does not start the birds.
+
+## Check MCP conformance
+
+```sh
+starling check --demo --all-protocols                    # one process, four revisions
+starling collect --demo-birds 2                          # two independent check workers, same matrix
+starling check --url http://127.0.0.1:8081/mcp --all-protocols
+starling check --config questions.yaml --protocol 2025-11-25,2026-07-28
+```
+
+In the ready dashboard, **Check revision** or **Check all revisions** shows
+the evidence and lets you download JSON without starting a load run. Each
+revision gets a fresh session. The versioned `mcp.streamable-http.core.v1`
+suite checks lifecycle, the first page of each advertised tool/prompt/resource
+catalog, and client transport cleanup. It never calls a tool or reads a
+resource. The modern revision also checks for complete-result caching fields.
+The [rule reference](developer.md#extending-the-conformance-suite) explains
+exactly what those checks establish.
+
+A one-shot CLI run writes `conformance.json`; the finite collector writes
+`fleet-conformance.json` with the expected and missing birds and each worker's
+unmodified findings. `pass` means **the applicable checks in this profile
+passed**, not that an entire server or every feature is certified. Optional
+capabilities not advertised are `skip`, a refused revision is `unsupported`,
+and a timeout is `inconclusive`. Non-passing campaigns exit nonzero. See the
+[distributed walkthrough](QUICKSTART.md#check-a-server-once-or-as-a-fleet).
 
 ## Live flock
 
@@ -71,8 +98,8 @@ a nonzero exit; a failed workload still gets a report if storage is writable.
 `--config` accepts [YAML](examples/local.yaml) (`.yaml` or `.yml`) as
 well as [TOML](examples/local.toml). The YAML shows two questions for one
 tool, a measured catalog request, and an MCP prompt. Both formats use the same fields
-and limits. Override `--duration`, `--users`, `--threads`, `--wait`, or
-`--timeout` without editing the file. `validate` prints the effective values
+and limits. Override `--protocol`, `--duration`, `--users`, `--threads`,
+`--wait`, or `--timeout` without editing the file. `validate` prints the effective values
 without sending any requests.
 
 ```sh
@@ -113,11 +140,8 @@ within a session. A slower target naturally completes fewer requests.
   with `target.select: candidate` in YAML, `--endpoint candidate` on the CLI,
   or the dashboard's Endpoint selector; `default`
   uses `target.url`. The same validation applies to every alternative.
-- `target.protocol = "2025-11-25"` selects the `initialize` handshake.
-  `"auto"` (default) lets the official `rmcp` SDK attempt `server/discover`
-  for 2026-07-28 and fall back to the legacy handshake. A target that needs the
-  SDK's full 10-second discovery timeout should use a longer `load.timeout` or
-  select the legacy protocol explicitly.
+- `target.protocol` sets the [requested MCP revision](#test-an-mcp-protocol-revision).
+  An omitted value means `auto`; the bundled examples explicitly request `2025-11-25`.
 - `load.users` sets concurrency (1–8 independent sessions). `load.threads`
   sets the number of Tokio worker threads in **Starling's load generator**
   (1–8, default 2); it does not change the MCP server's thread pool. Many
@@ -145,9 +169,40 @@ within a session. A slower target naturally completes fewer requests.
 These are MCP methods, not arbitrary HTTP verbs. The target must advertise
 the capabilities required by the workload.
 
+### Test an MCP protocol revision
+
+Select **MCP protocol revision** under **Load settings** before starting a
+dashboard run, or set `target.protocol` in your workload:
+
+```yaml
+target:
+  url: http://127.0.0.1:8081/mcp
+  protocol: "2025-06-18"
+```
+
+| Selection | What Starling does |
+|---|---|
+| `auto` | Tries `server/discover` for `2026-07-28`. On the SDK's legacy fallback it offers `2025-11-25` in `initialize` and can accept an earlier supported revision from the server. |
+| `2026-07-28` | Requires `server/discover` and uses per-request protocol metadata. No `initialize` fallback. |
+| `2025-11-25`, `2025-06-18`, `2025-03-26` | Sends `initialize` with exactly the selected revision. A different reply fails startup before workload requests are sent. |
+
+Use **Configure next run** to repeat the same workload with a different
+revision. The choice overrides the loaded YAML for that run, not the file.
+Headless equivalent: `starling run --config questions.yaml --protocol 2025-06-18`.
+For a self-contained check, try `starling demo --protocol 2026-07-28 --duration 2s`.
+`validate` checks the selection without contacting the target. Auto's SDK
+discovery timeout is 10 seconds; a shorter workload timeout can expire before fallback.
+
+The summary distinguishes `run.protocol` (requested) from `protocols`
+(revisions recorded for established sessions). `run.protocol_revisions` is
+the list of available choices, not a list of tests that passed. A successful run demonstrates
+that **your configured methods** worked with that revision, not full MCP
+conformance. The transport is still loopback **Streamable HTTP**; stdio and
+the `2024-11-05` HTTP+SSE transport are not selectable.
+
 ## Read the measurements
 
-Setup appears as `initialize` (or `session/startup` in auto mode) and
+Setup appears as `initialize`, `server/discover`, or `session/startup` (auto), and
 `tools/list` discovery when a tool is called. Workload KPIs exclude setup
 and include all scheduled methods. For example `tools/list` is setup, while
 `task/tools/list/catalog` is a scheduled request. The operations table separates

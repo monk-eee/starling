@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use rmcp::model::ProtocolVersion;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use url::{Host, Url};
@@ -48,6 +49,14 @@ pub struct Config {
     pub target: Target,
     pub load: Load,
     pub tasks: Vec<Task>,
+    #[serde(default)]
+    pub conformance: ConformanceOptions,
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConformanceOptions {
+    pub revisions: Vec<Protocol>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -105,13 +114,122 @@ fn valid_label(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
 }
 
-#[derive(Clone, Copy, Default, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Protocol {
-    #[serde(rename = "2025-11-25")]
-    Initialize,
     #[default]
-    #[serde(rename = "auto")]
     Auto,
+    Exact(&'static Standard),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Standard {
+    pub revision: ProtocolVersion,
+    pub require_catalog_hints: bool,
+}
+
+impl Standard {
+    const fn new(revision: ProtocolVersion, require_catalog_hints: bool) -> Self {
+        Self {
+            revision,
+            require_catalog_hints,
+        }
+    }
+}
+
+impl serde::Serialize for Standard {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.revision.as_str())
+    }
+}
+
+impl serde::Serialize for Protocol {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl Protocol {
+    // Streamable HTTP starts at 2025-03-26; the older HTTP+SSE transport is not interchangeable.
+    pub const REVISIONS: &'static [Standard] = &[
+        Standard::new(ProtocolVersion::V_2026_07_28, true),
+        Standard::new(ProtocolVersion::V_2025_11_25, false),
+        Standard::new(ProtocolVersion::V_2025_06_18, false),
+        Standard::new(ProtocolVersion::V_2025_03_26, false),
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Exact(standard) => standard.revision.as_str(),
+        }
+    }
+
+    pub fn startup_operation(self) -> &'static str {
+        match self {
+            Self::Auto => "session/startup",
+            Self::Exact(v) if v.revision.has_initialize() => "initialize",
+            Self::Exact(_) => "server/discover",
+        }
+    }
+
+    pub fn accepts(self, negotiated: &ProtocolVersion) -> bool {
+        match self {
+            Self::Auto => Self::REVISIONS.iter().any(|s| &s.revision == negotiated),
+            Self::Exact(requested) => &requested.revision == negotiated,
+        }
+    }
+
+    pub fn all() -> Vec<Self> {
+        Self::REVISIONS.iter().map(Self::Exact).collect()
+    }
+
+    pub fn validate_matrix(revisions: &[Self]) -> Result<()> {
+        ensure!(
+            revisions.len() <= Self::REVISIONS.len(),
+            "too many MCP revisions"
+        );
+        let mut seen = BTreeSet::new();
+        for r in revisions {
+            ensure!(seen.insert(r.as_str()), "duplicate MCP revision");
+            ensure!(
+                revisions.len() == 1 || *r != Self::Auto,
+                "auto must be selected alone"
+            );
+        }
+        Ok(())
+    }
+}
+
+impl std::str::FromStr for Protocol {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "auto" {
+            return Ok(Self::Auto);
+        }
+        Self::REVISIONS
+            .iter()
+            .find(|v| v.revision.as_str() == value)
+            .map(Self::Exact)
+            .ok_or_else(|| {
+                format!(
+                    "choose auto or one of: {}",
+                    Self::REVISIONS
+                        .iter()
+                        .map(|s| s.revision.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+    }
+}
+
+impl<'de> Deserialize<'de> for Protocol {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -164,6 +282,9 @@ pub struct StartOptions {
     /// One named target.endpoints entry, or "default" for target.url.
     #[arg(long, value_name = "NAME")]
     pub endpoint: Option<String>,
+    /// MCP protocol revision for this run, or "auto" to negotiate.
+    #[arg(long, value_name = "REVISION")]
+    pub protocol: Option<Protocol>,
     /// Concurrent sessions (1-8).
     #[arg(long, value_name = "N")]
     pub users: Option<u32>,
@@ -265,8 +386,20 @@ fn invalid_document(format: &str, line: Option<usize>) -> anyhow::Error {
 }
 
 impl Config {
+    fn bundled() -> Result<Self> {
+        toml::from_str(STARTER_TOML).context("reading the bundled workload")
+    }
+
+    pub fn check_target(url: Url) -> Result<Self> {
+        let mut cfg = Self::bundled()?;
+        cfg.target.url = url;
+        cfg.target.protocol = Protocol::Auto;
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
     pub fn demo(fixture: SocketAddr, options: StartOptions) -> Result<Self> {
-        let mut cfg: Self = toml::from_str(STARTER_TOML).context("reading the bundled demo")?;
+        let mut cfg = Self::bundled()?;
         cfg.run.name = "Starling demo".into();
         cfg.target.url = Url::parse(&format!("http://{fixture}/mcp"))?;
         cfg.with_options(options)
@@ -275,6 +408,9 @@ impl Config {
     pub fn with_options(mut self, options: StartOptions) -> Result<Self> {
         if let Some(name) = options.endpoint {
             self.target.selected = Some(name);
+        }
+        if let Some(protocol) = options.protocol {
+            self.target.protocol = protocol;
         }
         if let Some(users) = options.users {
             self.load.users = users;
@@ -325,6 +461,7 @@ impl Config {
     }
 
     fn validate(&mut self) -> Result<()> {
+        Protocol::validate_matrix(&self.conformance.revisions)?;
         ensure!(
             !self.run.name.trim().is_empty()
                 && self.run.name.len() <= 80

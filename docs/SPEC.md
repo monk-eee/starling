@@ -97,8 +97,12 @@ The backend, load engine, controller, workers, and CLI will be Rust. The fronten
 ## 3. MCP baseline
 
 The [MCP adapter](../src/mcp.rs) uses the [public Rust SDK](https://github.com/modelcontextprotocol/rust-sdk).
-The workload selects automatic discovery and negotiation, or an explicit
-2025-11-25 handshake; see the [workload reference](../README.md#configure-a-workload).
+The workload or ready dashboard can select automatic negotiation or pin an
+exact revision over Streamable HTTP. The [implemented profiles](../README.md#test-an-mcp-protocol-revision)
+use `initialize` for the supported 2025 revisions and `server/discover` for
+2026-07-28. Selecting a revision is not a full conformance test.
+The separate [core conformance suite](../developer.md#extending-the-conformance-suite)
+evaluates named lifecycle and catalog checks per revision and writes evidence.
 
 The [MCP architecture](https://modelcontextprotocol.io/specification/2025-11-25/architecture)
 separates JSON-RPC operations from their transport. The design distinguishes:
@@ -686,7 +690,9 @@ This mirrors Locust’s useful model of per-user setup, weighted tasks, sequenti
 
 ### 7.3 Configuration
 
-Operational settings belong in TOML rather than source code:
+The TOML below illustrates the proposed configuration. Today's YAML/TOML
+accepts one `target.protocol` per run, not a `protocol_versions` list;
+see the [runnable example](../examples/local.yaml).
 
 TOML
 
@@ -1200,7 +1206,9 @@ Configurable policies:
 ### 12.1 Control protocol
 
 Today the [wire contract](../proto/flock.proto) supports telemetry check-ins
-only. Workload distribution, synchronized starts, and rebalancing below are
+and a separate result-only conformance collector. Expected workers run a
+local check and submit findings for the active campaign. Workload distribution,
+synchronized starts, and rebalancing below are
 proposals, not features of `starling bird`.
 
 Controller-agent communication uses gRPC over TLS.

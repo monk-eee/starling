@@ -59,9 +59,12 @@ h2 { font-size: 17px; }
 .load-field input { width: 100%; margin: 0; }
 .load-field input[type="number"] { font: inherit; padding: 4px 8px; color-scheme: dark; }
 .duration-input input { min-width: 0; }
-.duration-input select { font: inherit; padding: 4px; color-scheme: dark; }
+.load-field select { font: inherit; padding: 4px; color-scheme: dark; }
 .load-field input[type="range"] { height: 32px; }
 .load-summary { flex-wrap: wrap; column-gap: 18px; font-size: 14px; }
+.check-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
+.check-result { margin: 0 0 16px; padding: 14px 18px; }
+.check-result a { color: #8fe6ca; }
 button, .button { background: #8fe6ca; color: #0c2621; border: 1px solid transparent; font-weight: bold; cursor: pointer; text-decoration: none; }
 button:disabled { opacity: .6; cursor: default; }
 .kpis, .graphs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }

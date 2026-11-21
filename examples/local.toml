@@ -5,6 +5,7 @@ seed = 42
 
 [target]
 url = "http://127.0.0.1:8081/mcp"
+# A date pins the revision; "auto" negotiates instead.
 protocol = "2025-11-25"
 
 [load]

@@ -26,3 +26,9 @@ operator environment, never in URLs, workload files, screenshots or example
 commands. The structured exporter uses fixed fields; that protection does
 not make an entire terminal transcript, raw report, or original image safe
 to publish.
+
+Distributed conformance uses a separate, result-only gRPC collector and the
+same mutual TLS boundary off loopback. A campaign ID prevents mixing runs;
+it is not a credential. Accept reports only from a trusted set of workers.
+The [one-shot checks](developer.md#extending-the-conformance-suite) list
+advertised catalogs; they do not execute the advertised tools.

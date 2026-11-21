@@ -10,7 +10,13 @@ target:
   # endpoints:
   #   candidate: http://127.0.0.1:8082/mcp
   # select: candidate
+  # Require one MCP revision, or use auto to negotiate. This selects the revision, not the transport.
+  # Other pins: "2025-03-26", "2025-06-18", "2026-07-28".
   protocol: "2025-11-25"
+
+# Optional matrix for `starling check --config ...`. It does not change load runs.
+# conformance:
+#   revisions: ["2025-11-25", "2026-07-28"]
 
 load:
   users: 2

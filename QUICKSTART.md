@@ -14,6 +14,10 @@ You need Git, [rustup](https://rustup.rs/) (Rust 1.99; the checkout pins
 a native linker (Xcode Command Line Tools on macOS, `build-essential` on
 Debian/Ubuntu). Build the web assets first: Cargo embeds them in the binary.
 
+For the released source rather than current `main`, use
+`git clone --branch v0.1.0 https://github.com/monk-eee/starling.git` in
+place of the first command below.
+
 ```sh
 git clone https://github.com/monk-eee/starling.git
 cd starling
@@ -83,6 +87,10 @@ telemetry address in the commands below, or copy it from **Connect a bird**.
    two local processes, not two remote machines.
 3. **Start run** below the flock is optional. It starts the *controller's
    local workload*. Its charts and **Export HTML** are not the sum of the birds.
+   To test the same workload against different MCP revisions, use the
+   **MCP protocol revision** dropdown before **Start run**. Afterward select
+   **Configure next run**, choose another date, and compare the requested and
+   negotiated revisions in each report. This does not reconfigure running birds.
 
 ## Join a bird yourself
 
@@ -120,6 +128,8 @@ starling bird --id wing-yaml --home http://127.0.0.1:8788 --config questions.yam
 Validation sends no requests. The bird starts its workload **after it
 registers**, without pressing **Start run**. Select `wing-yaml` to watch its
 counts. To use a named target from `target.endpoints`, add `--endpoint NAME`.
+To require a particular revision, set `target.protocol` in the YAML or add
+`--protocol 2025-06-18` to the bird command. See the [supported revisions](README.md#test-an-mcp-protocol-revision).
 The target must be reachable on the bird's own loopback interface. Load is
 per bird: two birds each running `load.users: 2` create four sessions, not two.
 
@@ -128,6 +138,49 @@ creates a **new** file targeting `127.0.0.1:8081/mcp`. Either start
 `starling fixture` in another terminal or change `target.url` to the actual
 MCP target before running. **Load YAML** in the browser configures the
 controller's next local run; it does not send the file to birds.
+
+## Check a server once or as a fleet
+
+No separate server is needed for either of these commands. Choose new report
+directories; Starling will not overwrite a previous result.
+
+```sh
+starling check --demo --all-protocols --report one-shot
+starling collect --demo-birds 2 --report fleet
+```
+
+Open `one-shot/conformance.json` or `fleet/fleet-conformance.json`. The fixture
+advertises tools and prompts, not resources, so `catalog.resources` should be
+`skip`, **not** `pass`. The fleet command starts two independent processes on
+this host; each checks all four revisions and submits evidence over loopback gRPC.
+For a real local target, use `starling check --url http://127.0.0.1:8081/mcp --all-protocols`
+without a file, or `starling check --config questions.yaml`. Set a matrix in
+that YAML or pass `--protocol 2025-11-25,2026-07-28`. With neither specified,
+`check` uses `target.protocol`; `auto` checks one negotiated revision, not every revision.
+
+**Across hosts:** provision [flock TLS credentials](developer.md#connect-across-machines)
+on the collector and workers. Start the collector first:
+
+```sh
+starling collect --listen "${COLLECTOR_PRIVATE_IP:?set the private bind IP}:8790" \
+  --expect west,east --deadline-secs 120 --report fleet-run
+```
+
+On each worker, set `CAMPAIGN` to the printed **Check campaign** and use the
+collector's reachable certificate DNS name, not a wildcard bind address:
+
+```sh
+starling check --config questions.yaml --all-protocols --id west \
+  --home "https://${COLLECTOR_DNS:?set the collector DNS name}:8790" \
+  --campaign "${CAMPAIGN:?copy the campaign ID}" --report west-check
+```
+
+Run the same command with `--id east --report east-check` on the second host.
+Each worker checks its **own** locally configured target and saves its own
+JSON before submitting. `collect` expects all supported revisions by default;
+to check fewer, give the collector and every worker the same `--protocol` list.
+A missing worker is named at the deadline, and an incomplete campaign cannot
+pass. The collector does not send workloads or commands.
 
 ## Reports and shutdown
 

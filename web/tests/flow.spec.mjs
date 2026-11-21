@@ -69,11 +69,28 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     expect((await request.post(start)).status()).toBe(403);
     expect((await request.post(start, { headers: { Origin: "https://other.invalid", "X-Starling-Control": "1" } })).status()).toBe(403);
     const headers = { "X-Starling-Control": "1" };
+    expect((await request.post(start, { headers, data: { protocol: "not-a-revision" } })).status()).toBe(400);
     for (const data of [{ users: 9 }, { threads: 0 }, { duration_ms: 999 }, { duration_ms: 604800001 }, { wait_ms: 60001 }, { timeout_ms: 15001 }]) {
       expect((await request.post(start, { headers, data })).status()).toBe(422);
     }
     const users = page.getByRole("slider", { name: "Concurrent users" });
     const threads = page.getByRole("slider", { name: "Worker threads" });
+    const protocol = page.getByRole("combobox", { name: "MCP protocol revision" });
+    await expect(protocol).toHaveValue("2025-11-25");
+    await protocol.selectOption("2025-06-18");
+    const checks = page.getByRole("region", {name: "MCP conformance report"});
+    expect((await request.post(`${url}/api/v1/runs/local/check`, {data:{all_protocols:true}})).status()).toBe(403);
+    await page.getByRole("button", {name: "Check revision", exact:true}).click();
+    await expect(checks.getByRole("heading", {name:"2025-06-18: pass"})).toBeVisible();
+    await page.getByRole("button", {name:"Check all revisions"}).click();
+    await expect(checks.getByRole("heading", {name:"2026-07-28: pass"})).toBeVisible();
+    const link = await checks.getByRole("link", {name:"Download conformance JSON"}).getAttribute("href");
+    const evidence = JSON.parse(decodeURIComponent(link.split(",")[1]));
+    expect(evidence.verdict).toBe("pass");
+    expect(evidence.profiles).toHaveLength(4);
+    expect(evidence.profiles[0].checks.find(c => c.rule === "catalog.resources").status).toBe("skip");
+    await expect(status).toHaveText("ready");
+    expect((await (await request.get(`${url}/api/v1/runs/local`)).json()).calls.count).toBe(0);
     await expect(users).toHaveValue("2");
     await users.press("ArrowRight");
     await threads.press("Home");
@@ -88,7 +105,9 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     await page.getByRole("button", { name: "Start run" }).click();
     await expect(status).toHaveText("running");
     expect((await request.post(start, { headers, data: { users: 8 } })).status()).toBe(409);
+    expect((await request.post(`${url}/api/v1/runs/local/check`, {headers, data:{all_protocols:true}})).status()).toBe(409);
     await expect(threads).toHaveCount(0);
+    await expect(protocol).toHaveCount(0);
     await expect.poll(() => frames.some(f => f.type === "tick" && f.open_interval?.calls > 0)).toBe(true);
     await expect(page.getByRole("rowheader", { name: "tools/call/echo" })).toBeVisible();
     await expect(page.getByRole("img", { name: "Latency by elapsed second" }).locator("canvas")).toBeVisible();
@@ -103,8 +122,9 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     expect(last.in_flight).toBe(0);
     expect(last.calls.count).toBeGreaterThan(0);
     expect(last.calls.failed).toBe(0);
-    const applied = { users: 3, threads: 1, duration_ms: 21600000, bucket_secs: 12, wait_ms: 400, timeout_ms: 2500 };
+    const applied = { protocol: "2025-06-18", users: 3, threads: 1, duration_ms: 21600000, bucket_secs: 12, wait_ms: 400, timeout_ms: 2500 };
     expect(last.run).toMatchObject(applied);
+    expect(last.protocols).toEqual(["2025-06-18"]);
     expect(last.open_interval).toBeUndefined();
     expect(last.series.reduce((count, p) => count + p.calls, 0)).toBe(last.calls.count);
     expect(last.operations.initialize.count).toBe(3);
@@ -118,6 +138,8 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     await expect(status).toHaveText("ready");
     await expect(users).toHaveValue("3");
     await expect(threads).toHaveValue("1");
+    await expect(protocol).toHaveValue("2025-06-18");
+    await protocol.selectOption("2026-07-28");
     await users.press("Home");
     await threads.press("ArrowRight");
     await expect(unit).toHaveValue("3600000");
@@ -128,9 +150,10 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     await page.getByRole("button", { name: "Start run" }).click();
     await expect(status).toHaveText("completed");
     const second = frames.at(-1);
-    expect(second.run).toMatchObject({ ...applied, users: 1, threads: 2, duration_ms: 1500, bucket_secs: 1, wait_ms: 0 });
+    expect(second.run).toMatchObject({ ...applied, protocol: "2026-07-28", users: 1, threads: 2, duration_ms: 1500, bucket_secs: 1, wait_ms: 0 });
     await expect(page.getByText("No wait between calls", { exact: true })).toBeVisible();
-    expect(second.operations.initialize.count).toBe(1);
+    expect(second.operations["server/discover"].count).toBe(1);
+    expect(second.protocols).toEqual(["2026-07-28"]);
     expect(second.calls.failed).toBe(0);
     const sibling = (await readdir(dirname(report))).find(name => name.startsWith("run-"));
     expect(sibling).toBeTruthy();
@@ -144,6 +167,8 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     await expect(page.getByRole("region", { name: "Live flock" })).toHaveCount(0);
     await bird.evaluate(img => img.decode());
     await expect(status).toHaveText("stopped");
+    await expect(page.getByText("Requested MCP: 2025-06-18")).toBeVisible();
+    await expect(page.getByText("Negotiated MCP: 2025-06-18")).toBeVisible();
     await expect(page.getByRole("button", { name: "Start run" })).toHaveCount(0);
     await expect(users).toHaveCount(0);
     await expect(page.getByText("3 concurrent users", { exact: true })).toBeVisible();
@@ -165,7 +190,7 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
       server.onMessage(message => { if (forwardRoster) client.send(message); });
     });
     const report = info.outputPath("imported");
-    const url = await launch(["demo","--web","--birds","1","--wait","375ms","--report",report], "Dashboard: ", children);
+    const url = await launch(["demo","--web","--birds","1","--protocol","2025-06-18","--wait","375ms","--report",report], "Dashboard: ", children);
     await page.goto(url);
     const status = page.getByRole("status", {name:"Run status"});
     await expect(status).toHaveText("ready");
@@ -203,6 +228,7 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     const headers = {"X-Starling-Control":"1","Content-Type":"application/yaml"};
     const sample = await (await request.get(`${url}/api/v1/workload/example`)).text();
     const actualEndpoint = sample.match(/^  url: (http:\/\/127\.0\.0\.1:\d+\/mcp)$/m)[1];
+    expect((await request.post(load,{headers,data:sample.replace('protocol: "2025-11-25"', 'protocol: "2024-11-05"')})).status()).toBe(422);
     expect((await request.post(load,{data:sample})).status()).toBe(403);
     expect((await request.post(load,{headers,data:"x".repeat(65537)})).status()).toBe(413);
     const bad = await request.post(load,{headers,data:sample.replace(actualEndpoint,"https://other.invalid/private")});
@@ -210,6 +236,7 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     expect(await bad.text()).not.toContain("private");
     const yaml = ("# " + ".".repeat(2500) + "\n" + sample)
       .replace(`url: ${actualEndpoint}`, `url: http://127.0.0.1:1/mcp\n  endpoints: { candidate: "${actualEndpoint}" }`)
+      .replace('protocol: "2025-11-25"', 'protocol: "2025-03-26"')
       .replace("30s","3s").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION");
     const upload = page.getByLabel("Load YAML");
     await upload.setInputFiles({name:"broken.yaml",mimeType:"application/yaml",buffer:Buffer.from("run: [")});
@@ -220,6 +247,7 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(status).toHaveText("ready");
     await expect(page.getByRole("spinbutton",{name:"Duration",exact:true})).toHaveValue("3");
+    await expect(page.getByRole("combobox",{name:"MCP protocol revision"})).toHaveValue("2025-03-26");
     await page.getByRole("combobox",{name:"Endpoint",exact:true}).selectOption("candidate");
     await page.getByRole("button",{name:"Start run"}).click();
     await expect(status).toHaveText("running");
@@ -229,8 +257,12 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     expect((await readFile(join(report,"index.html"),"utf8"))).not.toContain("PRIVATE_UPLOAD_QUESTION");
     const complete=JSON.parse(await readFile(join(report,"summary.json"),"utf8"));
     expect(complete.run.endpoint).toBe("candidate");
+    expect(complete.run.protocol).toBe("2025-03-26");
+    expect(complete.protocols).toEqual(["2025-03-26"]);
     expect(complete.calls.failed).toBe(0);
     await expect.poll(async () => (await roster()).find(b => b.id === "bird-01")?.state, {timeout: 20000}).toBe("completed");
-    expect(JSON.parse(await readFile(join(report,"birds","bird-01","run.json"),"utf8")).wait_ms).toBe(375);
+    const childReport = JSON.parse(await readFile(join(report,"birds","bird-01","summary.json"),"utf8"));
+    expect(childReport.run).toMatchObject({ wait_ms: 375, protocol: "2025-06-18" });
+    expect(childReport.protocols).toEqual(["2025-06-18"]);
   } finally { await Promise.all(children.reverse().map(stopChild)); }
 });

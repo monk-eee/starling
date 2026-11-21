@@ -18,3 +18,8 @@ actual version/date entry, add the grouped changes without duplicating them,
 and leave a fresh `Unreleased` heading. Remove only the fragments included
 in that release, in the same change. This is a manual rollup; committing a
 fragment does not publish a release.
+
+Release tags use `vMAJOR.MINOR.PATCH` and point to the tested commit on
+`main`. Match the CLI and dashboard package versions and lockfiles to the
+tag, then publish the GitHub Release against that existing tag. Do not move
+an already-published version.

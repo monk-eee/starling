@@ -11,6 +11,10 @@ use tokio::{
 const BIN: &str = env!("CARGO_BIN_EXE_starling");
 const SAMPLE: &str = include_str!("../examples/local.toml");
 
+#[path = "cli/conformance.rs"]
+mod conformance;
+#[path = "cli/protocol.rs"]
+mod protocol;
 #[path = "cli/telemetry.rs"]
 mod telemetry;
 
@@ -227,6 +231,8 @@ async fn failed_bird_reports_its_final_counts_without_starting_the_controller() 
                 &home,
                 "--config",
                 "bird.yaml",
+                "--protocol",
+                "2025-03-26",
                 "--report",
                 "wing",
             ])
@@ -241,6 +247,8 @@ async fn failed_bird_reports_its_final_counts_without_starting_the_controller() 
             String::from_utf8_lossy(&out.stderr)
         );
         let report = read(&work.path().join("wing"), "summary.json");
+        assert_eq!(report["run"]["protocol"], "2025-03-26");
+        assert_eq!(report["protocols"], serde_json::json!(["2025-03-26"]));
         let failed = report["calls"]["failed"].as_u64().unwrap();
         assert!(failed > 0);
         let end = String::from_utf8_lossy(&out.stderr)

@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use rmcp::{
     ClientLifecycleMode, ClientServiceExt, RoleClient, ServiceError,
     model::{
-        CallToolRequestParams, ClientConfig, ClientRequest, GetPromptRequestParams, Implementation,
-        PaginatedRequestParams, ProtocolVersion, ServerResult,
+        CallToolRequestParams, ClientConfig, ClientRequest, ErrorCode, GetPromptRequestParams,
+        Implementation, PaginatedRequestParams, ProtocolVersion, ServerResult,
     },
     service::{ClientInitializeError, RunningService},
     transport::{
@@ -21,6 +21,9 @@ use crate::{
 pub struct Session(RunningService<RoleClient, ClientConfig>);
 
 impl Session {
+    pub fn peer(&self) -> &rmcp::service::Peer<RoleClient> {
+        self.0.peer()
+    }
     pub async fn open(target: &Target, tasks: &[Task], timeout: Duration) -> Result<Self, Outcome> {
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -39,9 +42,14 @@ impl Session {
         config.retry_config = Arc::new(NeverRetry::default());
         let transport = StreamableHttpClientTransport::with_client(client, config);
         let (version, lifecycle) = match target.protocol {
-            Protocol::Initialize => (
-                ProtocolVersion::V_2025_11_25,
-                ClientLifecycleMode::Initialize,
+            Protocol::Exact(v) if v.revision.has_initialize() => {
+                (v.revision.clone(), ClientLifecycleMode::Initialize)
+            }
+            Protocol::Exact(v) => (
+                v.revision.clone(),
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![v.revision.clone()],
+                },
             ),
             Protocol::Auto => (
                 ProtocolVersion::V_2026_07_28,
@@ -61,14 +69,14 @@ impl Session {
             .await
             .map_err(init_error)?;
         let info = peer.peer_info().ok_or(Outcome::Protocol)?;
-        let supported = info.protocol_version == ProtocolVersion::V_2025_11_25
-            || (matches!(target.protocol, Protocol::Auto)
-                && info.protocol_version == ProtocolVersion::V_2026_07_28);
+        if !target.protocol.accepts(&info.protocol_version) {
+            return Err(Outcome::ProtocolVersion);
+        }
         let capable = tasks.iter().all(|task| match task.method {
             Method::CallTool | Method::ListTools => info.capabilities.tools.is_some(),
             Method::GetPrompt | Method::ListPrompts => info.capabilities.prompts.is_some(),
         });
-        if !capable || !supported {
+        if !capable {
             return Err(Outcome::Capability);
         }
         Ok(Self(peer))
@@ -175,8 +183,16 @@ fn init_error(error: ClientInitializeError) -> Outcome {
     match error {
         ClientInitializeError::TransportError { .. }
         | ClientInitializeError::ConnectionClosed(_) => Outcome::Transport,
+        ClientInitializeError::JsonRpcError(err)
+            if matches!(
+                err.code,
+                ErrorCode::UNSUPPORTED_PROTOCOL_VERSION | ErrorCode::METHOD_NOT_FOUND
+            ) =>
+        {
+            Outcome::ProtocolVersion
+        }
         ClientInitializeError::JsonRpcError(_) => Outcome::RpcError,
-        ClientInitializeError::NoCompatibleProtocolVersion { .. } => Outcome::Capability,
+        ClientInitializeError::NoCompatibleProtocolVersion { .. } => Outcome::ProtocolVersion,
         ClientInitializeError::LegacyFallbackFailed { fallback, .. } => init_error(*fallback),
         ClientInitializeError::Cancelled => Outcome::Cancelled,
         _ => Outcome::Protocol,

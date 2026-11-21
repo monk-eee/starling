@@ -55,6 +55,8 @@ impl Status {
 pub struct RunInfo {
     pub name: String,
     pub target_origin: String,
+    pub protocol: &'static str,
+    pub protocol_revisions: &'static [crate::config::Standard],
     pub endpoint: String,
     pub endpoint_names: Vec<String>,
     pub duration_ms: u64,
@@ -73,6 +75,8 @@ impl From<&Config> for RunInfo {
         Self {
             name: cfg.run.name.clone(),
             target_origin: cfg.target.endpoint().origin().ascii_serialization(),
+            protocol: cfg.target.protocol.as_str(),
+            protocol_revisions: Protocol::REVISIONS,
             endpoint: cfg
                 .target
                 .selected
@@ -287,10 +291,7 @@ impl Run {
 
     async fn worker(&self, id: u32) {
         let cfg = self.config();
-        let startup = match cfg.target.protocol {
-            Protocol::Initialize => "initialize",
-            Protocol::Auto => "session/startup",
-        };
+        let startup = cfg.target.protocol.startup_operation();
         let session = match self
             .measured(
                 startup,
@@ -302,7 +303,15 @@ impl Run {
             None => return,
             Some(Ok(s)) => s,
             Some(Err(e)) => {
-                self.halt(false, Some(format!("{startup} failed: {}", e.label())));
+                let reason = if e == Outcome::ProtocolVersion {
+                    format!(
+                        "{startup} failed: no compatible MCP revision for requested protocol {}",
+                        cfg.target.protocol.as_str()
+                    )
+                } else {
+                    format!("{startup} failed: {}", e.label())
+                };
+                self.halt(false, Some(reason));
                 return;
             }
         };

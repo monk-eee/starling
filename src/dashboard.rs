@@ -2,7 +2,7 @@ use std::{future::IntoFuture, net::SocketAddr, path::PathBuf, sync::Arc, time::D
 
 use anyhow::{Result, bail};
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Bytes,
     extract::{
         DefaultBodyLimit, Request, State,
@@ -13,13 +13,18 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
-use serde::Serialize;
-use tokio::{net::TcpListener, sync::watch, time::timeout};
+use serde::{Deserialize, Serialize};
+use tokio::{
+    net::TcpListener,
+    sync::{Semaphore, watch},
+    time::timeout,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     bird,
-    config::{Config, MAX_CONFIG_BYTES, STARTER_YAML, StartOptions},
+    config::{Config, MAX_CONFIG_BYTES, Protocol, STARTER_YAML, StartOptions},
+    conformance::{self, Selection},
     flock,
     metrics::Point,
     report,
@@ -54,7 +59,7 @@ pub async fn serve(
         &hub.endpoint,
         bird_listen,
         &dir,
-        run.config().load.wait,
+        run.config(),
         shutdown.clone(),
     )?;
     println!("Dashboard: http://{address}");
@@ -73,6 +78,7 @@ pub async fn serve(
         )
         .route("/api/v1/runs/local", get(snapshot))
         .route("/api/v1/runs/local/start", post(start))
+        .route("/api/v1/runs/local/check", post(check))
         .route("/api/v1/runs/local/stop", post(stop))
         .route("/api/v1/runs/local/next", post(next_run))
         .route(
@@ -113,6 +119,7 @@ pub async fn serve(
             birds,
         ))
         .layer(DefaultBodyLimit::max(2048))
+        .layer(Extension(Arc::new(Semaphore::new(1))))
         .layer(middleware::from_fn_with_state(address, local_requests));
     let server = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown.clone().cancelled_owned())
@@ -193,7 +200,14 @@ async fn snapshot(State(controller): State<Controller>) -> impl IntoResponse {
     Json((*controller.borrow().run.snapshot()).clone())
 }
 
-async fn start(State(controller): State<Controller>, body: Bytes) -> Response {
+async fn start(
+    State(controller): State<Controller>,
+    Extension(gate): Extension<Arc<Semaphore>>,
+    body: Bytes,
+) -> Response {
+    let Ok(_permit) = gate.try_acquire() else {
+        return StatusCode::CONFLICT.into_response();
+    };
     let options = if body.is_empty() {
         StartOptions::default()
     } else {
@@ -202,7 +216,7 @@ async fn start(State(controller): State<Controller>, body: Bytes) -> Response {
             Err(_) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    "Expected numeric load settings in a JSON object.",
+                    "Expected a JSON object with valid run settings and a supported MCP protocol.",
                 )
                     .into_response();
             }
@@ -211,6 +225,49 @@ async fn start(State(controller): State<Controller>, body: Bytes) -> Response {
     match controller.borrow().run.start(options) {
         Ok(true) => StatusCode::ACCEPTED.into_response(),
         Ok(false) => StatusCode::CONFLICT.into_response(),
+        Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckOptions {
+    protocol: Option<Protocol>,
+    endpoint: Option<String>,
+    #[serde(default)]
+    all_protocols: bool,
+}
+
+async fn check(
+    State(controller): State<Controller>,
+    Extension(gate): Extension<Arc<Semaphore>>,
+    body: Bytes,
+) -> Response {
+    let Ok(_permit) = gate.try_acquire() else {
+        return (StatusCode::CONFLICT, "Another check is in progress.").into_response();
+    };
+    let Ok(options) = serde_json::from_slice::<CheckOptions>(&body) else {
+        return (StatusCode::BAD_REQUEST, "Invalid conformance selection.").into_response();
+    };
+    let run = controller.borrow().run.clone();
+    if run.snapshot().view.status != crate::runner::Status::Ready {
+        return (StatusCode::CONFLICT, "Checks require a ready run.").into_response();
+    }
+    let cfg = match run.config().clone().with_options(StartOptions {
+        endpoint: options.endpoint,
+        ..Default::default()
+    }) {
+        Ok(cfg) => cfg,
+        Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
+    };
+    let selection = Selection {
+        protocol: options.protocol.into_iter().collect(),
+        all_protocols: options.all_protocols,
+    };
+    match selection.for_config(&cfg) {
+        Ok(revisions) => {
+            Json(conformance::inspect(&cfg, &revisions, "local").await).into_response()
+        }
         Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()).into_response(),
     }
 }
