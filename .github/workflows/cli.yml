@@ -27,6 +27,8 @@ jobs:
         run: |
           python3 -B tests/test_coverage.py
           npm --prefix web run build
+          cargo fmt --all -- --check
+          cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
           rustup component add llvm-tools-preview
           cargo install cargo-llvm-cov --version 0.8.7 --locked
       - name: Install Chromium
@@ -54,6 +56,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Build and install the CLI
         run: |
           npm --prefix web ci
@@ -72,6 +77,26 @@ jobs:
             length == 1 and .[0].status == "completed" and
             .[0].requests > 0 and .[0].requests == $report[0].calls.count and .[0].failed == 0
           ' events.log
+      - name: Check the installed version and deployment gates
+        id: gates
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && github.ref_name || '' }}
+        run: python3 tests/release_smoke.py "$RUNNER_TEMP/cli/bin/starling" "$RUNNER_TEMP/deployment-gates" --tag "$RELEASE_TAG"
+      - name: Save synthetic deployment reports even when a gate fails
+        if: ${{ !cancelled() && steps.gates.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-gates
+          path: |
+            ${{ runner.temp }}/deployment-gates/*/conformance.json
+            ${{ runner.temp }}/deployment-gates/*/index.html
+            ${{ runner.temp }}/deployment-gates/*/run.json
+            ${{ runner.temp }}/deployment-gates/*/summary.json
+            ${{ runner.temp }}/deployment-gates/*/timeseries.json
+            ${{ runner.temp }}/deployment-gates/*/operations.csv
+            ${{ runner.temp }}/deployment-gates/*/errors.csv
+            ${{ runner.temp }}/deployment-gates/*/junit.xml
+          if-no-files-found: error
       - name: Verify the native CLI, scenarios and shutdown
         run: cargo test --locked --release --workspace --all-features
 
