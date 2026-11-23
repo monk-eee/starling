@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { z } from "zod";
 
 export const api = "/api/v1/runs/local";
+export const preparedRun = z.object({ generation: z.number().int().positive() });
+export const reportFormat = z.enum(["html", "json", "yaml", "csv", "junit"]);
+export type ReportFormat = z.infer<typeof reportFormat>;
 const latency = z.number().nonnegative().nullable();
 const summary = z.object({
   count: z.number(), failed: z.number(), outcomes: z.record(z.string(), z.number()),
@@ -23,6 +26,8 @@ const frame = z.object({
   generation: z.number().int().optional(),
   run: z.object({
     name: z.string(), target_origin: z.string(), duration_ms: z.number(), users: z.number(),
+    mode: z.enum(["weighted", "once"]).optional(),
+    report_formats: z.array(reportFormat).min(1).optional(),
     threads: z.number().int().optional(), wait_ms: z.number().optional(), timeout_ms: z.number().optional(),
     max_duration_ms: z.number().positive().optional(), bucket_secs: z.number().int().positive().optional(),
     requests: z.array(z.string()).optional(),
@@ -35,6 +40,13 @@ const frame = z.object({
   reason: z.string().nullable(), elapsed_ms: z.number(), sessions: z.number(), in_flight: z.number(),
   protocols: z.array(z.string()), calls: summary, operations: z.record(z.string(), summary),
   acceptance: acceptance.optional(),
+  assertions: z.array(z.object({
+    operation: z.string(), title: z.string(), expected: z.string(),
+    status: z.enum(["pending", "passed", "failed", "not_run"]),
+    passed: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),
+    failure_kinds: z.array(z.string()).optional(),
+    first: z.number().int().positive().optional(), last_match_rank: z.number().int().positive().optional(),
+  })).optional(),
   series: z.array(point), open_interval: point.optional(),
 });
 const message = frame.extend({ type: z.enum(["snapshot", "tick"]) });

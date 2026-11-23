@@ -190,11 +190,23 @@ For deployment verification, run the [separate conformance and workload
 acceptance gates](README.md#use-conformance-and-performance-as-deployment-gates).
 The workload command saves its report even when a performance threshold fails.
 
-| Run | Where to open its offline report |
+An offline `index.html` displays saved results; it is **not a control page**.
+For live controls, keep `starling demo --web` or `starling run --web` running
+and open the exact **Dashboard:** URL it prints. A headless run does not
+start a web server.
+
+| Run | Default report location |
 |---|---|
 | `demo --web --birds 2` child | `out/run-…/birds/bird-01/index.html` (and `bird-02/`) under terminal 1's working directory. The parent is the controller's **initial** report directory. |
-| Manually launched bird with `--config` or `--demo` | The `index.html` path printed by that bird, on its host. Add `--report PATH` for a **new** directory; omit it for a fresh `out/run-…/` each time. |
+| Manually launched bird with `--config` or `--demo` | The report path printed by that bird, on its host. Add `--report PATH` for a **new** directory; omit it for a fresh `out/run-…/` each time. |
 | Controller's local run | Its printed report path or **Export HTML** in the dashboard. Offline HTML shows a saved run, not a live flock. |
+
+In a build with [selectable report formats](README.md#choose-workload-report-formats),
+use `--format html` for only the offline dashboard or `--format json,junit`
+for CI. To pipe a single document from a headless run, use `--stdout yaml`,
+`--stdout json` or `--stdout html`. Load a [once-per-case suite](README.md#run-every-case-and-check-its-answer)
+to see its individual assertions above the run settings. The published
+v0.3.0 predates these options.
 
 Reports are written when work finishes or drains. A bird that finished
 successfully can keep checking in without issuing any more requests. Stop

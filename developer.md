@@ -253,6 +253,17 @@ uses no provider-specific API. Workload [acceptance criteria](src/acceptance.rs)
 are evaluated once, after drain, against the same `calls` summary used for the
 report, never against live ticks or a fleet-wide average.
 
+The [report writer](src/report.rs) uses the same serializers for the selected
+on-disk artifacts and live downloads. Run the CLI report-format regression
+(`cargo test --locked --test cli report_format_selection`) when changing that
+contract. A file selection must not change the measurements or exit status.
+The [case matcher](src/assertions.rs) compiles bounded regexes when loading
+the workload and returns a rank, not matched content. The runner distinguishes
+weighted sampling from exactly-once case coverage. Use `cargo test --locked
+--test cli once_cases_run` to check a full suite, a deliberate mismatch and
+an incomplete suite. The browser tests cover pending and final case rows
+in the live and offline dashboard.
+
 From the clone, after building the web assets:
 
 ```sh

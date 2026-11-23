@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { api, terminal, useFeed } from "./feed";
+import { api, preparedRun, terminal, useFeed, type Frame } from "./feed";
 import { Chart, errors, percentiles, throughput } from "./chart";
 import { Conformance, checkReport, type CheckReport } from "./conformance";
 import { Flock } from "./flock";
@@ -12,10 +12,52 @@ const number = (n: number | null, digits = 1) => n === null ? "\u2014" : n.toLoc
 const ms = (n: number | null) => n === null ? "\u2014" : `${number(n, 2)} ms`;
 const percentage = (failed: number, count: number) => count ? `${number(100 * failed / count, 2)}%` : "\u2014";
 
+function ExportReport() {
+  const [file, setFile] = useState("index.html");
+  return <>
+    <label>Download file <select value={file} onChange={e => setFile(e.currentTarget.value)}>
+      <option value="index.html">HTML dashboard</option>
+      <option value="summary.json">JSON summary</option>
+      <option value="summary.yaml">YAML summary</option>
+      <option value="run.json">JSON run settings</option>
+      <option value="timeseries.json">JSON timeline</option>
+      <option value="operations.csv">CSV operations</option>
+      <option value="errors.csv">CSV errors</option>
+      <option value="junit.xml">JUnit XML</option>
+    </select></label>
+    <a className="button" href={`${api}/export?file=${file}`} download>
+      {file === "index.html" ? "Export HTML" : `Export ${file}`}
+    </a>
+  </>;
+}
+
+function CaseAssertions({ rows, once }: { rows: NonNullable<Frame["assertions"]>; once: boolean }) {
+  const passed = rows.filter(r => r.status === "passed").length;
+  const verdict = {pending:"Pending", passed:"Passed", failed:"Failed", not_run:"Not run"};
+  return <section id="case-assertions" className="panel check-result" aria-label="Case assertions">
+    <h2>Case assertions: {passed}/{rows.length} passed</h2>
+    <p>{once ? "Each case runs once. Unexecuted cases cannot pass." :
+      "Cases are sampled by weight. A case with any failed call stays failed."}</p>
+    <div className="table-wrap case-rows"><table><thead><tr>
+      <th>#</th><th>Case</th><th>Expected</th><th>Observed</th><th>Verdict</th>
+    </tr></thead><tbody>{rows.map((r,i) => <tr key={r.operation}>
+      <th scope="row">{i+1}</th><td>{r.title}</td>
+      <td>{r.expected}{r.first !== undefined && <small>All conditions on one of the first {r.first} results</small>}</td>
+      <td>{r.passed+r.failed === 0 ? "Not executed" : `${r.passed} passed, ${r.failed} failed`}
+        {r.failure_kinds && <small>{r.failure_kinds.map(k => k === "assertion" ? "Result did not match" : k.replaceAll("_"," ")).join(", ")}</small>}
+        {r.last_match_rank !== undefined && <small>Last match: #{r.last_match_rank}</small>}</td>
+      <td className={`case-${r.status}`}>{verdict[r.status]}</td>
+    </tr>)}</tbody></table></div>
+  </section>;
+}
+
 function Dashboard() {
   const { current, offline, connection, error } = useFeed();
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [yamlError, setYamlError] = useState("");
+  const [loadedYaml, setLoadedYaml] = useState<{ generation: number; source: string } | null>(null);
+  const [pastedYaml, setPastedYaml] = useState("");
   const [checked, setChecked] = useState<{ generation: number | undefined; report: CheckReport } | null>(null);
   const [checking, setChecking] = useState(false);
   async function check(options: { endpoint?: string; protocol?: string; all_protocols: boolean }) {
@@ -29,21 +71,34 @@ function Dashboard() {
       setActionError(cause instanceof Error ? cause.message : "The controller is unreachable.");
     } finally { setChecking(false); }
   }
-  async function loadYaml(file: File) {
+  async function loadYaml(source: File | string) {
     setPending(true);
     setActionError("");
+    setYamlError("");
     try {
-      if (file.size > 65536) throw new Error("Workload files must be 64 KiB or smaller.");
+      const size = typeof source === "string" ? new Blob([source]).size : source.size;
+      if (size > 65536) throw new Error("Workload files must be 64 KiB or smaller.");
+      let text: string;
+      if (typeof source === "string") {
+        text = source;
+      } else {
+        try { text = new TextDecoder("utf-8", { fatal: true }).decode(await source.arrayBuffer()); }
+        catch { throw new Error("Could not read the file as UTF-8. Save it as UTF-8 or paste the YAML instead."); }
+      }
       const response = await fetch(`${api}/workload`, {
-        method: "POST", headers: { "X-Starling-Control": "1", "Content-Type": "application/yaml" }, body: file,
+        method: "POST", headers: { "X-Starling-Control": "1", "Content-Type": "application/yaml" }, body: text,
       });
       if (!response.ok) {
-        const detail = response.status === 422 ? await response.text() :
+        const body = await response.text();
+        const detail = response.status === 422 ? body :
           response.status === 409 ? "A run is already in progress." : `HTTP ${response.status}`;
-        throw new Error(`Could not load workload: ${detail}`);
+        throw new Error(detail);
       }
+      const receipt = preparedRun.parse(await response.json());
+      setLoadedYaml({ generation: receipt.generation, source: typeof source === "string" ? "pasted YAML" : source.name });
+      if (typeof source === "string") setPastedYaml("");
     } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : "The controller is unreachable.");
+      setYamlError(`Could not load workload: ${cause instanceof Error ? cause.message : "The controller is unreachable."}`);
     } finally { setPending(false); }
   }
   async function control(action: "start" | "stop" | "next", options?: StartOptions) {
@@ -54,8 +109,9 @@ function Dashboard() {
         method: "POST", headers: { "X-Starling-Control": "1", "Content-Type": "application/json" },
         ...(options && { body: JSON.stringify(options) }),
       });
+      const body = await response.text();
       if (!response.ok) {
-        const detail = response.status === 422 ? await response.text() : `HTTP ${response.status}`;
+        const detail = response.status === 422 ? body : `HTTP ${response.status}`;
         throw new Error(`Could not ${action === "next" ? "prepare the next run" : `${action} this run`}: ${detail}.`);
       }
     } catch (cause) {
@@ -91,24 +147,40 @@ function Dashboard() {
             disabled={disabled || current.status === "stopping"} onClick={() => void control("stop")}>
             {current.status === "stopping" ? "Draining..." : "Stop run"}</button>}
           {!offline && terminal(current.status) && <>
-            <a className="button" href={`${api}/export`} download>Export HTML</a>
+            <ExportReport />
             <button disabled={disabled} onClick={() => void control("next")}>Configure next run</button>
           </>}
         </div>
       </header>
       {current.reason && <p className="alert" role="alert">{current.reason}</p>}
+      {current.assertions && current.assertions.length > 0 && <CaseAssertions rows={current.assertions} once={run?.mode === "once"} />}
       {!offline && (current.status === "ready" || terminal(current.status)) &&
         <section className="panel workload-file" aria-label="YAML workload">
           <div><h2>YAML workload</h2><a href="/api/v1/workload/example" download="starling.yaml">Download example YAML</a></div>
           <label>Load YAML <input type="file" accept=".yaml,.yml" disabled={disabled}
-            onChange={e => { const file = e.currentTarget.files?.[0]; e.currentTarget.value = ""; if (file) void loadYaml(file); }} /></label>
-          <small>Choose the endpoint, methods and questions in your file. Loading validates it; Start run sends the requests.</small>
-          {current.run.requests && <p>Configured requests: {current.run.requests.join(", ")}</p>}
+            onClick={e => { e.currentTarget.value = ""; }}
+            onChange={e => { const file = e.currentTarget.files?.[0]; if (file) void loadYaml(file); }} /></label>
+          <details className="paste-yaml"><summary>Paste YAML instead</summary>
+            <label>YAML text<textarea rows={6} spellCheck={false} disabled={disabled} value={pastedYaml}
+              onChange={e => setPastedYaml(e.currentTarget.value)} /></label>
+            <button type="button" disabled={disabled || !pastedYaml.trim()} onClick={() => void loadYaml(pastedYaml)}>Load pasted YAML</button>
+          </details>
+          {yamlError && <p className="alert" role="alert">{yamlError}</p>}
+          <p role="status" aria-label="Loaded workload">
+            {loadedYaml && loadedYaml.generation === current.generation
+              ? <strong>Loaded {loadedYaml.source}: {current.run.name}.</strong>
+              : <strong>Current workload: {current.run.name}.</strong>}
+            {current.status === "ready" && " Ready to start. No workload requests sent."}
+          </p>
+          <small>The download is the fixture starter. Load your own YAML to change the endpoint and questions.</small>
+          {current.run.requests && <p>Configured requests: {current.run.mode === "once"
+            ? `${current.run.requests.length} cases, each scheduled once` : current.run.requests.join(", ")}</p>}
         </section>}
       {settings && (!offline && current.status === "ready"
         ? <LoadForm key={current.generation} initial={settings} maxDurationMs={current.run.max_duration_ms ?? 900000}
             disabled={disabled} endpoint={current.run.endpoint ?? "default"} endpoints={current.run.endpoint_names ?? []}
             protocol={current.run.protocol} revisions={current.run.protocol_revisions}
+            initialFormats={current.run.report_formats}
             onStart={options => void control("start", options)} onCheck={options => void check(options)} />
         : <SettingsSummary settings={settings} />)}
       {checking && <p role="status">Checking MCP conformance...</p>}

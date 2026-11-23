@@ -516,6 +516,200 @@ async fn real_sessions_produce_consistent_redacted_offline_reports() {
 }
 
 #[tokio::test]
+async fn once_cases_run_exactly_once_and_yaml_stdout_reports_the_content_failure() {
+    let (mut child, url) = fixture().await;
+    let work = tempdir().unwrap();
+    let tasks: Vec<_> = (1..=25)
+        .map(|i| {
+            serde_json::json!({
+                "name":format!("q{i:02}"), "title":format!("Public case {i}"),
+                "tool":"echo","weight":1,"arguments":{"text":"PRIVATE_WORKLOAD ready"},
+                "assert_match":{"label":"A ready message","path":"/content","first":5,
+                    "all":[{"path":"/type","matches":["^text$"]},
+                           {"path":"/text","matches":[if i==17 {"PRIVATE_ABSENT"} else {"ready"}]}]}
+            })
+        })
+        .collect();
+    let mut cfg = serde_json::json!({
+        "run":{"name":"Case suite","mode":"once","duration":"40s","seed":1},
+        "target":{"url":url,"protocol":"2025-06-18"},"tasks":tasks,
+        "assert":{"min_requests":25},"report":{"formats":["yaml","json","html","junit"]},
+        "load":{"users":3,"wait":0,"timeout":"3s"}
+    });
+    fs::write(
+        work.path().join("cases.yaml"),
+        serde_yaml_ng::to_string(&cfg).unwrap(),
+    )
+    .unwrap();
+    let output = timeout(
+        Duration::from_secs(12),
+        starling()
+            .current_dir(work.path())
+            .args([
+                "run",
+                "--config",
+                "cases.yaml",
+                "--report",
+                "one",
+                "--stdout",
+                "yaml",
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let dir = work.path().join("one");
+    assert_eq!(output.stdout, fs::read(dir.join("summary.yaml")).unwrap());
+    let summary: Value = serde_yaml_ng::from_slice(&output.stdout).unwrap();
+    assert_eq!(summary, read(&dir, "summary.json"));
+    assert_eq!(summary["calls"]["count"], 25);
+    assert_eq!(summary["calls"]["failed"], 1);
+    let rows = summary["assertions"].as_array().unwrap();
+    assert_eq!(rows.len(), 25);
+    for (i, row) in rows.iter().enumerate() {
+        assert_eq!(row["title"], format!("Public case {}", i + 1));
+        assert_eq!(row["status"], if i == 16 { "failed" } else { "passed" });
+        assert_eq!(
+            row["passed"].as_u64().unwrap() + row["failed"].as_u64().unwrap(),
+            1
+        );
+        assert_eq!(row["last_match_rank"].as_u64(), (i != 16).then_some(1));
+    }
+    for name in [
+        "index.html",
+        "summary.yaml",
+        "summary.json",
+        "run.json",
+        "junit.xml",
+    ] {
+        assert!(
+            !fs::read_to_string(dir.join(name))
+                .unwrap()
+                .contains("PRIVATE_"),
+            "{name}"
+        );
+    }
+
+    cfg["load"]["users"] = 1.into();
+    cfg["load"]["wait"] = "2s".into();
+    cfg["run"]["duration"] = "1s".into();
+    cfg["assert"]["min_requests"] = 1.into();
+    fs::write(
+        work.path().join("cases.yaml"),
+        serde_yaml_ng::to_string(&cfg).unwrap(),
+    )
+    .unwrap();
+    let output = timeout(
+        Duration::from_secs(8),
+        starling()
+            .current_dir(work.path())
+            .args([
+                "run",
+                "--config",
+                "cases.yaml",
+                "--report",
+                "short",
+                "--stdout",
+                "json",
+            ])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let summary: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(summary["calls"]["count"], 1);
+    assert_eq!(summary["acceptance"]["status"], "incomplete");
+    assert_eq!(summary["assertions"][1]["status"], "not_run");
+    assert!(
+        fs::read_to_string(work.path().join("short/junit.xml"))
+            .unwrap()
+            .contains("skipped=\"24\"")
+    );
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
+async fn report_format_selection_preserves_gate_failures_and_prints_a_real_file() {
+    let (mut child, url) = fixture().await;
+    let work = tempdir().unwrap();
+    fs::write(
+        work.path().join("case.toml"),
+        format!(
+            "{}\n[report]\nformats = ['junit']\n[assert]\nmin_requests = 1000\n",
+            config(&url)
+                .replace("2s", "1s")
+                .replace("wait = 0", "wait = '200ms'")
+        ),
+    )
+    .unwrap();
+    for (dir, overrides, files, primary) in [
+        ("xml", vec![], vec!["junit.xml"], "junit.xml"),
+        (
+            "data",
+            vec!["--format", "json,csv", "--format", "json"],
+            vec![
+                "errors.csv",
+                "operations.csv",
+                "run.json",
+                "summary.json",
+                "timeseries.json",
+            ],
+            "summary.json",
+        ),
+    ] {
+        let out = timeout(
+            Duration::from_secs(12),
+            starling()
+                .current_dir(work.path())
+                .args(["run", "--config", "case.toml", "--report", dir])
+                .args(overrides)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert!(stdout.contains(&format!(
+            "Report: {}",
+            Path::new(dir).join(primary).display()
+        )));
+        assert!(stdout.contains("Performance gate: failed"));
+        let report = work.path().join(dir);
+        let mut actual: Vec<_> = fs::read_dir(&report)
+            .unwrap()
+            .map(|f| f.unwrap().file_name().into_string().unwrap())
+            .collect();
+        actual.sort();
+        assert_eq!(actual, files);
+        if primary == "junit.xml" {
+            let xml = fs::read_to_string(report.join(primary)).unwrap();
+            assert!(xml.contains("performance.acceptance") && xml.contains("<failure "));
+        } else {
+            let summary = read(&report, primary);
+            assert_eq!(summary["acceptance"]["status"], "failed");
+            assert_eq!(
+                summary["run"]["report_formats"],
+                serde_json::json!(["json", "csv"])
+            );
+        }
+    }
+    child.kill().await.unwrap();
+}
+
+#[tokio::test]
 async fn performance_thresholds_gate_the_exit_and_persist_scheduled_measurements() {
     let (mut child, target) = fixture().await;
     let yaml = format!(

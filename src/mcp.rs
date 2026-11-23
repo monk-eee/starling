@@ -121,8 +121,7 @@ impl Session {
         Err(Outcome::Protocol)
     }
 
-    pub async fn call(&self, task: &Task) -> Result<(), Outcome> {
-        let pointer = task.assert_exists.as_deref();
+    pub async fn call(&self, task: &Task) -> Result<Option<usize>, Outcome> {
         match task.method {
             Method::CallTool => {
                 let params = CallToolRequestParams::new(task.tool.clone().expect("validated tool"))
@@ -131,14 +130,14 @@ impl Session {
                 if result.is_error == Some(true) {
                     return Err(Outcome::ToolError);
                 }
-                check_result(result, pointer)
+                check_result(result, task)
             }
             Method::GetPrompt => {
                 let params =
                     GetPromptRequestParams::new(task.prompt.clone().expect("validated prompt"))
                         .with_arguments(task.arguments.clone());
                 let result = self.0.get_prompt(params).await.map_err(service_error)?;
-                check_result(result, pointer)
+                check_result(result, task)
             }
             Method::ListTools | Method::ListPrompts => {
                 // A scheduled list measures the server, not the SDK's discovery cache.
@@ -152,10 +151,10 @@ impl Session {
                     self.0.send_request(request).await.map_err(service_error)?,
                 ) {
                     (Method::ListTools, ServerResult::ListToolsResult(result)) => {
-                        check_result(result, pointer)
+                        check_result(result, task)
                     }
                     (Method::ListPrompts, ServerResult::ListPromptsResult(result)) => {
-                        check_result(result, pointer)
+                        check_result(result, task)
                     }
                     _ => Err(Outcome::Protocol),
                 }
@@ -173,14 +172,22 @@ impl Session {
     }
 }
 
-fn check_result<T: serde::Serialize>(result: T, pointer: Option<&str>) -> Result<(), Outcome> {
-    if let Some(pointer) = pointer {
-        let json = serde_json::to_value(result).map_err(|_| Outcome::Protocol)?;
-        if json.pointer(pointer).is_none() {
-            return Err(Outcome::Assertion);
-        }
+fn check_result<T: serde::Serialize>(result: T, task: &Task) -> Result<Option<usize>, Outcome> {
+    if task.assert_exists.is_none() && task.assert_match.is_none() {
+        return Ok(None);
     }
-    Ok(())
+    let json = serde_json::to_value(result).map_err(|_| Outcome::Protocol)?;
+    if task
+        .assert_exists
+        .as_ref()
+        .is_some_and(|p| json.pointer(p).is_none())
+    {
+        return Err(Outcome::Assertion);
+    }
+    task.assert_match
+        .as_ref()
+        .map(|a| a.rank(&json).ok_or(Outcome::Assertion))
+        .transpose()
 }
 
 fn init_error(error: ClientInitializeError) -> Outcome {

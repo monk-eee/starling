@@ -126,15 +126,18 @@ already running, add `--listen 127.0.0.1:0`). Durations are finite, from
 with Ctrl+C or **Stop run** to drain and save a partial report. Reports are
 written at the end, not checkpointed during a run.
 
-To try your own server, copy either example to a different filename in
-`examples/`, then change the target URL, tools and assertions. Git ignores
-these local copies and all reports under `out/`.
+To try another server, copy either example to a different filename in
+`examples/`, then change the target URL, tools and assertions. You can keep
+separate workloads for as many public or private test services as you need.
+Git ignores these local copies and all reports under `out/`.
 
-**From the dashboard:** choose **Download example YAML**, edit it, then use
-**Load YAML**. In the demo the download points to its actual fixture port.
-Loading validates the file and previews the request labels; it does **not**
-contact the target. Click **Start run** when ready. A running workload cannot
-be replaced. Loading after a finished run reserves a fresh report.
+**From the dashboard:** **Download example YAML** is the fixture starter.
+Use **Load YAML** for your own file, or **Paste YAML instead** if your
+browser doesn't offer a file picker. An accepted upload shows the filename
+and run name; a rejected one shows an error beside the input and leaves the
+current workload in place. Loading sends **no** target traffic. Click
+**Start run** when ready. A running workload cannot be replaced. Loading
+after a finished run reserves a fresh report.
 
 ## Configure a workload
 
@@ -184,6 +187,49 @@ within a session. A slower target naturally completes fewer requests.
 
 These are MCP methods, not arbitrary HTTP verbs. The target must advertise
 the capabilities required by the workload.
+
+### Run every case and check its answer
+
+The default `run.mode: weighted` samples 1–16 weighted tasks for the run
+duration. Use `run.mode: once` for a test suite: give each of up to 64 cases
+weight `1`. One user executes them in file order. Multiple users divide
+the cases between them without repeats. The run finishes after the last
+case drains; the duration is a deadline. An unexecuted case, a mismatch,
+or an MCP error makes the suite fail, even if an aggregate threshold passes.
+
+For example, use the [fixture](examples/local.yaml) and replace its tasks
+with this one to check an actual result, not just the presence of a field:
+
+```yaml
+tasks:
+  - name: ready
+    title: Does the service report readiness?
+    tool: status
+    weight: 1
+    assert_match:
+      label: A text result says ready
+      path: /content
+      first: 5
+      all:
+        - {path: /type, matches: ['^text$']}
+        - {path: /text, matches: ['^ready$']}
+```
+
+`path` selects an array in the MCP result. **One element** within its first
+1–32 positions must satisfy every field rule. Field paths are JSON Pointers
+relative to that element; each selected field must be a nonblank string
+matching **all** its case-insensitive Rust regular expressions. A missing
+array, empty result, wrong type, match in a different row or match below
+the cutoff fails. Optional `markdown: true` normalizes Unicode and whitespace,
+removes backticks and strips HTTP URLs/link destinations before matching text.
+`assert_exists` can also be used; if both are specified, both must pass.
+
+**Case assertions** shows the configured cases before start and their actual
+verdicts, counts and last successful match ranks during and after the run,
+including in the offline HTML and JSON/YAML summaries. `title` and `label`
+are explicit **public** descriptions. Do not put private prompts or secrets
+there. Arguments, raw replies, regexes and matched text are not copied into
+the reports.
 
 ### Test an MCP protocol revision
 
@@ -236,11 +282,48 @@ Overall percentiles come from merged HDR histograms, **not an average of tool
 percentiles**. WebSocket subscribers get an initial snapshot and numbered
 updates; reconnects and skipped updates get a fresh snapshot.
 
-Reports include the standalone HTML dashboard (`index.html`), public run metadata (`run.json`),
-counters and percentiles (`summary.json`), interval data (`timeseries.json`),
-`operations.csv`, `errors.csv`, and aggregated `junit.xml`. Reports and dashboard
-payloads do not include arguments, raw results, session IDs, full target paths,
-or server error text. Run, task, prompt, tool and endpoint alias names are public labels.
+### Choose workload report formats
+
+By default each `run` saves the original seven HTML/JSON/CSV/JUnit files.
+YAML is opt-in. The native HTML is the same
+Starling dashboard as the live view, with the completed run embedded so it
+opens offline. `--report` chooses a **new directory**; `--format` chooses
+which files it contains:
+
+| Format | Files | Use it for |
+|---|---|---|
+| `html` | `index.html` | The offline dashboard, charts and performance gate |
+| `json` | `summary.json`, `run.json`, `timeseries.json` | Final counters and gate verdict, effective settings, timeline |
+| `yaml` | `summary.yaml` | Same native summary and per-case assertions as `summary.json` |
+| `csv` | `operations.csv`, `errors.csv` | Per-operation measurements and error counts, not a gate verdict |
+| `junit` | `junit.xml` | Aggregated test cases and failures for a CI test publisher |
+
+```sh
+starling run --config workload.yaml --headless --format html --report review
+starling run --config workload.yaml --headless --format json,junit --report ci-results
+starling run --config workload.yaml --stdout yaml > result.yaml
+starling run --config workload.yaml --stdout json > result.json
+starling run --config workload.yaml --stdout html > result.html
+```
+
+Or set `report: {formats: [json, junit]}` in YAML (in TOML, `formats = ["json", "junit"]`
+under `[report]`). A CLI selection replaces the file's selection; `--format`
+can also be repeated. Choose at least one format. `demo`, `bird` workloads and
+`validate` accept the same option. The console still summarizes the run, and a
+failing run still exits nonzero regardless of format. For headless `run`
+and `demo`, `--stdout` emits **only** the requested document (HTML dashboard,
+JSON or YAML summary, operations CSV, or JUnit XML); logs and errors stay on
+stderr. `--stdout` does not change the independent on-disk selection.
+YAML uses YAML 1.2 scalar rules; if a downstream loader automatically turns
+ISO-date MCP revisions into date objects, use JSON to keep the string type.
+
+In the ready dashboard, use **Save report as** before **Start run**. On a
+finished live run, **Download file** exports an individual file from that
+same run even if you didn't select its format for automatic saving. The
+`check` and `collect` commands still write their own conformance JSON.
+Native reports do not copy questions from arguments, raw results, session
+IDs, full target paths or server error text. Run, task, prompt, tool and
+endpoint alias names, case titles and assertion labels are public.
 
 ### Use conformance and performance as deployment gates
 
@@ -269,8 +352,8 @@ starling run --config deployment.yaml --headless --report "$artifacts/workload"
 
 Use `--all-protocols` only if the service must support every listed revision;
 otherwise choose just the expected ones. Publish `conformance/conformance.json`
-and the workload bundle: `index.html`, `run.json`, `summary.json`,
-`timeseries.json`, `operations.csv`, `errors.csv`, and `junit.xml`. Configure
+and the selected workload files (by default: `index.html`, `run.json`, `summary.json`,
+`timeseries.json`, `operations.csv`, `errors.csv`, and `junit.xml`). Configure
 the caller to retain available artifacts **even on failure**. A gate failure
 does not prevent the workload report from being written.
 
