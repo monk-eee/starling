@@ -28,7 +28,7 @@ the [out-of-checkout smoke test](QUICKSTART.md#verify-the-install-and-read-the-l
 ## Follow a bird from CLI to screen
 
 ```text
-local workload file -> bird -> local MCP target
+local workload file -> bird -> HTTP or HTTPS MCP target
                         |
                         +-- gRPC CheckIn --> controller roster -- WebSocket --> browser
                         |
@@ -38,7 +38,7 @@ local workload file -> bird -> local MCP target
 | If you are changing... | Start here |
 |---|---|
 | Which processes start or stop | [CLI](src/main.rs) binds the fixture and dashboard. [Bird lifecycle](src/bird.rs) spawns demo children, registers independent birds, and drains their local workloads. |
-| What the test actually sends | [Config](src/config.rs) validates one selected loopback target and the named requests. The [runner](src/runner.rs) owns the virtual users and timing; the [MCP adapter](src/mcp.rs) sends the method and checks its result. A bird is a process, not a virtual user or worker thread. |
+| What the test actually sends | [Config](src/config.rs) validates the selected target, its alternatives and the named requests. The [runner](src/runner.rs) owns the virtual users and timing; the [MCP adapter](src/mcp.rs) sends the method and checks its result. A bird is a process, not a virtual user or worker thread. |
 | What a bird sends home | [flock.proto](proto/flock.proto) defines `Telemetry.CheckIn` for the live roster and `CheckCollector.Submit` for a separate, finite conformance campaign. Neither receipt contains a command or target. Optional [OTLP process telemetry](#process-telemetry) uses neither RPC. |
 | What the user sees | The [hub](src/flock.rs) keeps the latest heartbeat per ID. The [dashboard](src/dashboard.rs) serves `GET /api/v1/flock` and `/api/v1/flock/live` (WebSocket). The [flock panel](web/src/flock.tsx) renders selectable birds from those snapshots; [feed.ts](web/src/feed.ts) handles browser reconnection. |
 | Where results go | The [report writer](src/report.rs) saves the local run. The controller does not collect birds' offline bundles, merge their p95s, or replay the live roster in an export. |
@@ -168,10 +168,12 @@ starling demo --web --bird-listen "${CONTROLLER_PRIVATE_IP:?set the private bind
 starling bird --id wing-1 --home "https://${CONTROLLER_DNS:?set the controller DNS name}:8788" --demo
 ```
 
-For a real local test server, replace `--demo` with `--config questions.yaml`
+For your own test server, replace `--demo` with `--config questions.yaml`
 on the worker. `--home` addresses the controller; `target.url` in that file
-addresses the MCP service **from the worker's network namespace**. An HTTPS
-telemetry connection does not make remote workload targets valid. If binding
+addresses the MCP service **from the worker's network namespace**. HTTP or
+server-verified HTTPS works independently of flock mTLS and OTLP. For an
+internal HTTPS endpoint, provision its CA in the runner or container trust
+store. The flock client certificate is never sent to an MCP target. If binding
 to a wildcard address inside a container, advertise the reachable DNS name
 to birds, not the wildcard printed as the listener address.
 
@@ -355,8 +357,11 @@ The [test](tests/flock_containers.py) creates temporary certificates and an
 internal Docker network. It requires two authenticated birds with successful
 requests, rejects an untrusted client certificate, stops one bird, waits for
 **stale**, then restarts it and checks that there are two live IDs again.
-It cleans up its containers, network and test keys. This verifies telemetry
-between processes; it is not a benchmark of a production MCP target.
+It also checks all MCP revisions over HTTP and HTTPS between containers,
+runs a gated workload over HTTPS, and rejects an untrusted CA and a
+mismatched certificate name. The test CA is mounted only in the disposable
+clients that should trust it. The test cleans up its containers, network and
+keys; it is not a benchmark of a production target.
 
 ## Known gaps
 

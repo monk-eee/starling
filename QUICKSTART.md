@@ -14,21 +14,20 @@ You need Git, [rustup](https://rustup.rs/) (Rust 1.99; the checkout pins
 a native linker (Xcode Command Line Tools on macOS, `build-essential` on
 Debian/Ubuntu). Build the web assets first: Cargo embeds them in the binary.
 
-For the released source rather than current `main`, use
-`git clone --branch v0.2.0 https://github.com/monk-eee/starling.git` in
-place of the first command below.
+Install the [v0.3.0 source release](https://github.com/monk-eee/starling/releases/tag/v0.3.0):
 
 ```sh
-git clone https://github.com/monk-eee/starling.git
+git clone --branch v0.3.0 https://github.com/monk-eee/starling.git
 cd starling
 npm --prefix web ci
 npm --prefix web run build
 cargo install --path . --locked
-starling bird --help
+starling --version  # starling 0.3.0
 ```
 
 If `starling` is not found after installing, add Cargo's bin directory to
 your shell's `PATH` (usually `export PATH="$HOME/.cargo/bin:$PATH"`).
+To build the development version instead, omit `--branch v0.3.0` when cloning.
 
 Once installed, the binary contains the dashboard, fixture and starter YAML.
 You do not need this checkout, Node.js, a second repository, or a collector
@@ -117,7 +116,7 @@ Keep terminal 1 running. On its dashboard, choose **Download example YAML**.
 Save it as `questions.yaml` in terminal 2's working directory. The demo
 download already points to terminal 1's fixture, so no additional server is
 needed. Change the question in `tasks[].arguments.text` for an `echo` case,
-or set the target, methods, arguments, and assertions for a different local
+or set the target, methods, arguments, and assertions for a different
 test service you control. See the [annotated example](examples/local.yaml).
 
 ```sh
@@ -130,7 +129,7 @@ registers**, without pressing **Start run**. Select `wing-yaml` to watch its
 counts. To use a named target from `target.endpoints`, add `--endpoint NAME`.
 To require a particular revision, set `target.protocol` in the YAML or add
 `--protocol 2025-06-18` to the bird command. See the [supported revisions](README.md#test-an-mcp-protocol-revision).
-The target must be reachable on the bird's own loopback interface. Load is
+The HTTP or HTTPS target must be reachable from the bird. Load is
 per bird: two birds each running `load.users: 2` create four sessions, not two.
 
 Prefer to create the YAML from the CLI? `starling init questions.yaml`
@@ -153,8 +152,11 @@ Open `one-shot/conformance.json` or `fleet/fleet-conformance.json`. The fixture
 advertises tools and prompts, not resources, so `catalog.resources` should be
 `skip`, **not** `pass`. The fleet command starts two independent processes on
 this host; each checks all four revisions and submits evidence over loopback gRPC.
-For a real local target, use `starling check --url http://127.0.0.1:8081/mcp --all-protocols`
-without a file, or `starling check --config questions.yaml`. Set a matrix in
+To check your own hosted service without a file, set `MCP_URL` to its full
+endpoint (for example `https://mcp.example.test/mcp`) and run
+`starling check --url "$MCP_URL"`. The certificate must be trusted on the
+machine running Starling. Local HTTP works too. To use a workload, run
+`starling check --config questions.yaml`. Set a matrix in
 that YAML or pass `--protocol 2025-11-25,2026-07-28`. With neither specified,
 `check` uses `target.protocol`; `auto` checks one negotiated revision, not every revision.
 

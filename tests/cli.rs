@@ -103,15 +103,12 @@ async fn snapshot(http: &reqwest::Client, url: &str) -> Value {
 }
 
 fn dashboard_client() -> reqwest::Client {
-    #[cfg(feature = "otlp")]
-    {
-        static TLS: std::sync::Once = std::sync::Once::new();
-        TLS.call_once(|| {
-            rustls::crypto::ring::default_provider()
-                .install_default()
-                .expect("test TLS provider")
-        });
-    }
+    static TLS: std::sync::Once = std::sync::Once::new();
+    TLS.call_once(|| {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("test TLS provider")
+    });
     reqwest::Client::builder().no_proxy().build().unwrap()
 }
 

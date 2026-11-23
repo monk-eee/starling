@@ -25,14 +25,18 @@ impl Session {
         self.0.peer()
     }
     pub async fn open(target: &Target, tasks: &[Task], timeout: Duration) -> Result<Self, Outcome> {
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
-            .connect_timeout(timeout)
-            .build()
-            .map_err(|_| Outcome::Transport)?;
-        let mut config = StreamableHttpClientTransportConfig::with_uri(target.endpoint().as_str())
+            .connect_timeout(timeout);
+        let endpoint = target.endpoint();
+        if endpoint.scheme() == "http" {
+            // A plaintext-only session needs no platform CA store and trusts no TLS peers.
+            builder = builder.tls_certs_only([]);
+        }
+        let client = builder.build().map_err(|_| Outcome::Transport)?;
+        let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
             .max_json_response_size(1024 * 1024)
             .max_sse_event_size(1024 * 1024)
             .max_error_response_size(0)

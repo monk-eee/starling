@@ -4,7 +4,7 @@ run:
   seed: 42
 
 target:
-  # One Streamable HTTP MCP endpoint per run. Use a local test server you control.
+  # One HTTP or HTTPS MCP endpoint per run. Use a server you have permission to test.
   url: http://127.0.0.1:8081/mcp
   # Optional: choose a different endpoint for the same questions with --endpoint candidate.
   # endpoints:

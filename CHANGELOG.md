@@ -6,6 +6,26 @@ versions are available from [GitHub Releases](https://github.com/monk-eee/starli
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-23
+
+### Added
+
+- [Check or load-test a hosted MCP endpoint](README.md#configure-a-workload)
+  over HTTP or HTTPS. One-shot checks accept the URL directly; headless
+  runs, dashboard runs and independent birds use the same workload file.
+  HTTPS verifies the certificate chain and hostname using the client's
+  platform trust store. No extra build feature is needed.
+
+### Changed
+
+- `starling check --url` allows 15 seconds per operation, including session
+  startup, rather than inheriting the local starter's three-second timeout.
+  A check using `--config` still honors the workload's `load.timeout`.
+
+MCP target requests are anonymous. [Client authentication](docs/adr.d/0007-target-authentication.md)
+is proposed, not part of this release. The dashboard listener remains local;
+flock credentials and OTLP settings do not change.
+
 ## 0.2.0 - 2026-11-23
 
 ### Added

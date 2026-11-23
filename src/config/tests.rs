@@ -68,17 +68,30 @@ fn optional_wait_accepts_zero_and_preserves_explicit_durations_in_both_formats()
 }
 
 #[test]
-fn local_limits_and_weights_are_checked_before_dispatch() {
+fn targets_accept_http_and_https_without_exposing_credentials_or_rewriting_tls_names() {
     for url in [
-        "http://192.0.2.1/mcp",
-        "http://localhost.example/mcp",
-        "http://u:p@localhost/mcp",
-        "http://localhost/mcp?token=abc",
+        "http://192.0.2.1:8080/mcp",
+        "http://service.example/mcp",
+        "https://service.example:8443/mcp",
+        "https://localhost/mcp",
+        "https://[2001:db8::1]/mcp",
     ] {
-        let mut cfg = sample();
-        cfg.target.url = url.parse().unwrap();
-        assert!(cfg.validate().is_err());
+        let cfg = Config::check_target(url.parse().unwrap()).unwrap();
+        assert_eq!(cfg.target.endpoint().as_str(), url);
     }
+    for url in [
+        "ftp://service.example/mcp",
+        "http://u:p@localhost/mcp",
+        "https://user@service.example/mcp",
+        "https://service.example/mcp?token=abc",
+        "https://service.example/mcp#fragment",
+    ] {
+        assert!(Config::check_target(url.parse().unwrap()).is_err(), "{url}");
+    }
+}
+
+#[test]
+fn local_limits_and_weights_are_checked_before_dispatch() {
     let mut cfg = sample();
     cfg.target.url = "http://localhost:9000/mcp".parse().unwrap();
     cfg.validate().unwrap();
@@ -100,18 +113,18 @@ fn request_validation_rejects_ambiguous_cases_and_checks_even_unused_targets() {
     let mut cfg = sample();
     cfg.target.endpoints.insert(
         "other".into(),
-        "http://example.invalid/mcp".parse().unwrap(),
+        "https://example.invalid/mcp?private".parse().unwrap(),
     );
     assert!(cfg.validate().is_err());
     cfg.target.endpoints.insert(
         "other".into(),
-        "http://localhost:9000/private-path".parse().unwrap(),
+        "https://service.example:9000/private-path".parse().unwrap(),
     );
     cfg.target.selected = Some("other".into());
     cfg.validate().unwrap();
     assert_eq!(
         cfg.target.endpoint().as_str(),
-        "http://127.0.0.1:9000/private-path"
+        "https://service.example:9000/private-path"
     );
     cfg.target.selected = Some("absent".into());
     assert!(cfg.validate().is_err());

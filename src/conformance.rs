@@ -68,7 +68,7 @@ pub struct Check {
     /// Use the target and operation timeout from this local workload.
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Check a local Streamable HTTP MCP endpoint directly, without a workload file.
+    /// Check an HTTP or HTTPS Streamable HTTP MCP endpoint without a workload file.
     #[arg(long, conflicts_with_all = ["config", "demo"])]
     url: Option<Url>,
     #[arg(long, requires = "config")]
