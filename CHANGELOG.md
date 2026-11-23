@@ -6,6 +6,19 @@ versions are available from [GitHub Releases](https://github.com/monk-eee/starli
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-23
+
+### Added
+
+- [Performance acceptance gates](README.md#use-conformance-and-performance-as-deployment-gates)
+  for `starling run`. Set any combination of `error_rate`, `p95`, `p99`, and
+  `min_requests` in the workload's `assert` block. Starling evaluates the
+  final scheduled requests after drain, excluding setup and discovery.
+- The CLI exits nonzero if a configured gate fails or is incomplete. The
+  summary and offline dashboard show each threshold, its observed value and
+  result; JUnit includes the gate verdict. Conformance checks remain separate,
+  and workloads without thresholds keep their previous behavior.
+
 ## 0.1.0 - 2026-11-21
 
 First public source release. Follow the [quickstart](QUICKSTART.md#install-the-cli)

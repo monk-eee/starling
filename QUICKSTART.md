@@ -15,7 +15,7 @@ a native linker (Xcode Command Line Tools on macOS, `build-essential` on
 Debian/Ubuntu). Build the web assets first: Cargo embeds them in the binary.
 
 For the released source rather than current `main`, use
-`git clone --branch v0.1.0 https://github.com/monk-eee/starling.git` in
+`git clone --branch v0.2.0 https://github.com/monk-eee/starling.git` in
 place of the first command below.
 
 ```sh
