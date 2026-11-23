@@ -274,6 +274,29 @@ ports, select a bird, disconnect and rejoin it, load a YAML scenario, and
 open a report offline. Use `STARLING_BROWSER_CHANNEL=chrome` if testing
 with an installed Chrome instead.
 
+### Reproduce the deployment gate check
+
+With Python 3.11+ and the CLI installed from this checkout:
+
+```sh
+python3 tests/release_smoke.py "$(command -v starling)" "$(mktemp -d)/deployment-gates"
+```
+
+The [smoke test](tests/release_smoke.py) checks the installed version against
+both package manifests and lockfiles. On a `v*` tag, CI also passes `--tag`
+and requires an exact match. The test starts one loopback fixture, checks
+all supported protocol revisions, then runs a paced workload twice against
+that same endpoint. The first run must pass. The second must exit 1 **only**
+because the sample minimum is too high; a crash or a tool error isn't a pass.
+The loose latency limits test gate behavior, not hosted-runner performance.
+
+The required macOS job uploads the `deployment-gates` artifact even on
+failure when reports are available. It contains conformance evidence and
+the `accepted` and `rejected` workload bundles, not the generated input or
+environment. The rejected JUnit case is intentional. The Rust coverage job
+also enforces formatting and all-feature Clippy warnings before collecting
+coverage. Neither check requires a pipeline integration in the CLI.
+
 ### Measure test coverage
 
 The [CLI workflow](.github/workflows/cli.yml) measures two different things on
