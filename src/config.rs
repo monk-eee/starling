@@ -11,9 +11,10 @@ use anyhow::{Context, Result, bail, ensure};
 use rmcp::model::ProtocolVersion;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use url::{Host, Url};
+use url::Url;
 
 pub const MAX_DURATION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const MAX_OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
 pub const DEFAULT_PATH: &str = "starling.yaml";
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 pub const STARTER_YAML: &str = include_str!("../examples/local.yaml");
@@ -97,18 +98,17 @@ impl Target {
 
 fn validate_url(url: &mut Url) -> Result<()> {
     ensure!(
-        url.scheme() == "http"
+        matches!(url.scheme(), "http" | "https")
+            && url.has_host()
             && url.username().is_empty()
             && url.password().is_none()
             && url.query().is_none()
             && url.fragment().is_none(),
-        "target must use http without credentials, query or fragment"
+        "target must be an HTTP or HTTPS URL with a host and without credentials, query or fragment"
     );
-    match url.host() {
-        Some(Host::Ipv4(ip)) if ip.is_loopback() => (),
-        Some(Host::Ipv6(ip)) if ip.is_loopback() => (),
-        Some(Host::Domain("localhost")) => url.set_host(Some("127.0.0.1"))?,
-        _ => bail!("target must be a loopback IP or localhost"),
+    // Preserve the local HTTP fixture convention, but never rewrite a TLS certificate name.
+    if url.scheme() == "http" && url.host_str() == Some("localhost") {
+        url.set_host(Some("127.0.0.1"))?;
     }
     Ok(())
 }
@@ -400,6 +400,8 @@ impl Config {
         let mut cfg = Self::bundled()?;
         cfg.target.url = url;
         cfg.target.protocol = Protocol::Auto;
+        // A direct check has no workload timeout; allow for DNS, TLS and remote startup.
+        cfg.load.timeout = MAX_OPERATION_TIMEOUT;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -492,7 +494,7 @@ impl Config {
             "load.wait must be 0 (no pause) or 1ms-60s"
         );
         ensure!(
-            (Duration::from_millis(50)..=Duration::from_secs(15)).contains(&self.load.timeout),
+            (Duration::from_millis(50)..=MAX_OPERATION_TIMEOUT).contains(&self.load.timeout),
             "load.timeout must be 50ms-15s"
         );
         validate_url(&mut self.target.url)?;

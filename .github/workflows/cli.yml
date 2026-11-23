@@ -131,7 +131,7 @@ jobs:
           test "$(docker inspect --format '{{.State.ExitCode}}' "$cid")" = 0
           jq -e '.status == "stopped" and .in_flight == 0 and .sessions == 0' "$reports/stopped/summary.json"
           test -s "$reports/stopped/index.html"
-      - name: Verify independent flock and conformance workers over mutual TLS
+      - name: Verify flock mTLS and HTTP/HTTPS MCP targets
         run: |
           docker pull node:22-bookworm-slim
           python3 tests/flock_containers.py starling-ci node:22-bookworm-slim

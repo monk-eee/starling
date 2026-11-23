@@ -231,11 +231,11 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     expect((await request.post(load,{headers,data:sample.replace('protocol: "2025-11-25"', 'protocol: "2024-11-05"')})).status()).toBe(422);
     expect((await request.post(load,{data:sample})).status()).toBe(403);
     expect((await request.post(load,{headers,data:"x".repeat(65537)})).status()).toBe(413);
-    const bad = await request.post(load,{headers,data:sample.replace(actualEndpoint,"https://other.invalid/private")});
+    const bad = await request.post(load,{headers,data:sample.replace(actualEndpoint,"https://other.invalid/mcp?private")});
     expect(bad.status()).toBe(422);
     expect(await bad.text()).not.toContain("private");
     const yaml = ("# " + ".".repeat(2500) + "\n" + sample)
-      .replace(`url: ${actualEndpoint}`, `url: http://127.0.0.1:1/mcp\n  endpoints: { candidate: "${actualEndpoint}" }`)
+      .replace(`url: ${actualEndpoint}`, `url: https://other.invalid/mcp\n  endpoints: { candidate: "${actualEndpoint}" }`)
       .replace('protocol: "2025-11-25"', 'protocol: "2025-03-26"')
       .replace("30s","3s").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION")
       + "\nassert:\n  p95: '< 15s'\n  min_requests: 1\n";

@@ -7,7 +7,7 @@
 **Product:** Starling — a Rust load-testing and performance-analysis platform for Model Context Protocol servers
 
 **Read this as a roadmap, not a CLI reference.** The current CLI runs YAML or
-TOML scenarios against a loopback Streamable HTTP target. Birds report their
+TOML scenarios against a local or remote Streamable HTTP target over HTTP or HTTPS. Birds report their
 own runs over gRPC; the controller does not assign them work. The
 [bootstrap guide](../QUICKSTART.md#install-the-cli) builds one Rust binary
 with an embedded dashboard. [Process logging](../developer.md#process-telemetry)

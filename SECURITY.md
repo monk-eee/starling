@@ -11,7 +11,12 @@ or attachments** in that public request. Once a private channel is agreed,
 include the affected commit or version, expected and observed behavior, and
 impact. Use synthetic data wherever possible.
 
-Test only local MCP services you control. The browser dashboard, the MCP
+Test only MCP services you are authorized to check or load-test. A workload
+chooses the destination of its tool arguments: review imported workloads
+before starting them. Prefer HTTPS off-host; its certificate and hostname
+are verified, while HTTP gives no confidentiality. Target authentication is
+[proposed, not implemented](docs/adr.d/0007-target-authentication.md).
+The browser dashboard, the MCP
 target, and the bird telemetry listener serve different purposes. Do not
 expose the browser as a substitute for the
 [mutually authenticated telemetry listener](developer.md#connect-across-machines).

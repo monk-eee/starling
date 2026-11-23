@@ -19,6 +19,7 @@ enum Pages {
     Valid,
     NoHints,
     InvalidSchema,
+    Slow,
 }
 
 // A fixed legacy revision makes the peer refuse discovery and counter-offer that revision at initialize.
@@ -44,6 +45,10 @@ async fn wire_peer(
                 "initialize" => json!({"protocolVersion": legacy_only.or(version).unwrap(), "capabilities":{"tools":{}},
                     "serverInfo":{"name":"fixture","version":"1"}}),
                 "notifications/initialized" => return StatusCode::ACCEPTED.into_response(),
+                "tools/list" if pages == Pages::Slow => {
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    json!({"tools":[]})
+                }
                 "tools/list" if pages == Pages::InvalidSchema => json!({"tools":[{"name":"PRIVATE_TOOL","description":"PRIVATE_CONTENT","inputSchema":{"type":"array"}}]}),
                 "tools/list" if version == Some("2026-07-28") && pages == Pages::Valid => json!({"tools":[], "resultType":"complete", "ttlMs":0, "cacheScope":"private"}),
                 "tools/list" => json!({"tools":[]}),
@@ -247,6 +252,36 @@ async fn conformance_matrix_distinguishes_a_legacy_pass_from_missing_modern_fiel
     let wire: Vec<_> = rx.try_iter().collect();
     assert_eq!(wire.iter().filter(|r| r.method == "tools/list").count(), 2);
     assert!(!wire.iter().any(|r| r.method == "tools/call"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn direct_url_check_does_not_inherit_the_local_starter_timeout() {
+    let (url, _rx, server) = wire_peer(Some("2025-06-18"), Pages::Slow).await;
+    let tmp = tempdir().unwrap();
+    let out = starling()
+        .current_dir(tmp.path())
+        .args([
+            "check",
+            "--url",
+            &url,
+            "--protocol",
+            "2025-06-18",
+            "--report",
+            "result",
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        read(&tmp.path().join("result"), "conformance.json")["verdict"],
+        "pass"
+    );
     server.abort();
 }
 

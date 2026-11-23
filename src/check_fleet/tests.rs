@@ -8,7 +8,6 @@ use tokio::net::TcpListener;
 
 #[tokio::test]
 async fn campaign_accepts_complete_evidence_once_and_rejects_spliced_reports() {
-    #[cfg(feature = "otlp")]
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("test process TLS provider");

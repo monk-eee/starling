@@ -6,7 +6,7 @@
 
 # Starling
 
-Load-test a **local MCP server** and see which tools slow down or fail. Watch
+Load-test an **HTTP or HTTPS MCP server** and see which tools slow down or fail. Watch
 throughput, latency, and errors in the browser, then reopen the same dashboard
 as an offline HTML report. For compatibility rather than load, run a
 [one-shot or distributed MCP conformance check](#check-mcp-conformance).
@@ -32,6 +32,16 @@ a *separate* workload on the dashboard host; it does not start the birds.
 
 ## Check MCP conformance
 
+To check a hosted service without starting a workload, set `MCP_URL` to
+its full HTTP or HTTPS endpoint, then run:
+
+```sh
+starling check --url "${MCP_URL:?set MCP_URL to your endpoint}"
+```
+
+To try the built-in fixture, check all supported revisions, or supply a
+workload file instead:
+
 ```sh
 starling check --demo --all-protocols                    # one process, four revisions
 starling collect --demo-birds 2                          # two independent check workers, same matrix
@@ -45,6 +55,8 @@ revision gets a fresh session. The versioned `mcp.streamable-http.core.v1`
 suite checks lifecycle, the first page of each advertised tool/prompt/resource
 catalog, and client transport cleanup. It never calls a tool or reads a
 resource. The modern revision also checks for complete-result caching fields.
+Direct URL checks allow 15 seconds per operation, including session startup;
+`check --config` uses that workload's `load.timeout` instead.
 The [rule reference](developer.md#extending-the-conformance-suite) explains
 exactly what those checks establish.
 
@@ -82,7 +94,7 @@ starling validate
 ```
 
 `init` creates the [example YAML](examples/local.yaml) and never overwrites a file.
-Edit its target, methods, questions and assertions for a local MCP server you control. To exercise the
+Edit its target, methods, questions and assertions for an MCP server you control. To exercise the
 unchanged starter instead, run `starling fixture` in a second terminal.
 Then run `starling run` for a headless test or `starling run --web` for the
 dashboard (default `http://127.0.0.1:8787`). `validate` checks the file
@@ -114,7 +126,7 @@ already running, add `--listen 127.0.0.1:0`). Durations are finite, from
 with Ctrl+C or **Stop run** to drain and save a partial report. Reports are
 written at the end, not checkpointed during a run.
 
-To try your own local server, copy either example to a different filename in
+To try your own server, copy either example to a different filename in
 `examples/`, then change the target URL, tools and assertions. Git ignores
 these local copies and all reports under `out/`.
 
@@ -133,10 +145,14 @@ Selections are seeded per user. By default, each user starts its next request
 as soon as the previous one finishes. There is no pacing timer and no overlap
 within a session. A slower target naturally completes fewer requests.
 
-- Set `target.url` to a loopback HTTP endpoint you control. Redirects and
-  proxies are disabled. Non-loopback targets, embedded credentials and URL
-  queries are rejected. Optionally add `target.endpoints` as a mapping of
-  public aliases to alternative local URLs. Choose **one endpoint per run**
+- Set `target.url` to an `http://` or `https://` endpoint you have permission
+  to test. HTTPS verifies the certificate chain and hostname against the
+  client's platform trust store; no extra flag or build feature is needed.
+  Plain HTTP is unencrypted. Redirects and proxies are disabled. Credentials,
+  queries and fragments are rejected in target URLs. MCP requests are
+  anonymous; [target authentication is proposed](docs/adr.d/0007-target-authentication.md).
+  Optionally add `target.endpoints` as a mapping of public aliases to other
+  HTTP or HTTPS URLs. Choose **one endpoint per run**
   with `target.select: candidate` in YAML, `--endpoint candidate` on the CLI,
   or the dashboard's Endpoint selector; `default`
   uses `target.url`. The same validation applies to every alternative.
@@ -197,7 +213,7 @@ The summary distinguishes `run.protocol` (requested) from `protocols`
 (revisions recorded for established sessions). `run.protocol_revisions` is
 the list of available choices, not a list of tests that passed. A successful run demonstrates
 that **your configured methods** worked with that revision, not full MCP
-conformance. The transport is still loopback **Streamable HTTP**; stdio and
+conformance. Both URL schemes use MCP **Streamable HTTP**; stdio and
 the `2024-11-05` HTTP+SSE transport are not selectable.
 
 ## Read the measurements
@@ -241,7 +257,7 @@ assert:
   min_requests: 100
 ```
 
-From the deployed server's loopback network namespace, run the two commands
+From a runner that can reach the deployed server, run the two commands
 against the same configured target. Either nonzero exit stops this example:
 
 ```sh

@@ -104,8 +104,7 @@ struct RunOutput {
 #[tokio::main]
 async fn main() -> Result<()> {
     let command = Cli::parse().command;
-    // The collector client and the mTLS flock must share the same TLS provider.
-    #[cfg(feature = "otlp")]
+    // MCP, flock and optional OTLP clients must agree on the process-wide TLS provider.
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|_| anyhow::anyhow!("could not select the Starling TLS provider"))?;

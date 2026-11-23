@@ -78,7 +78,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("reports", type=Path, help="new directory to keep the synthetic reports")
-    parser.add_argument("--tag", help="release tag to match, e.g. v0.2.0")
+    parser.add_argument("--tag", help="release tag to match (vMAJOR.MINOR.PATCH)")
     args = parser.parse_args()
     cli, reports = args.binary.resolve(strict=True), args.reports.resolve()
     env = {k: v for k, v in os.environ.items() if not k.startswith(("STARLING_", "OTEL_"))}

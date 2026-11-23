@@ -1,4 +1,4 @@
-"""Verify the telemetry-only RPC on an isolated Docker network. Requires openssl and Docker."""
+"""Verify flock mTLS and HTTP/HTTPS MCP targets on an isolated Docker network."""
 import json
 import os
 from pathlib import Path
@@ -119,6 +119,68 @@ def check(image, probe_image):
                 assert {p["requested"] for p in report["profiles"]} == set(combined["expected_revisions"])
                 assert all(p["verdict"] == "pass" for p in report["profiles"])
             print("Two separate containers submitted every selected conformance profile over mutual TLS.")
+
+            target = create(network, ["--network-alias", "target", "--network-alias", "wrong-name"],
+                            image, ["fixture", "--listen", "127.0.0.1:8081"])
+            # Terminate TLS in front of the real MCP fixture; neither listener is published on the host.
+            edge = create("container:" + target, [*identity("target", "serverAuth", 7), "--entrypoint", "node"],
+                          probe_image, ["-e", """
+const http = require('node:http'), https = require('node:https'), fs = require('node:fs');
+function forward(req, res) {
+  const upstream = http.request({host:'127.0.0.1', port:8081, path:req.url, method:req.method,
+    headers:{...req.headers, host:'127.0.0.1:8081'}}, reply => {
+      res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);
+    });
+  upstream.on('error', error => res.destroy(error));
+  res.on('close', () => upstream.destroy());
+  req.pipe(upstream);
+}
+http.createServer(forward).listen(8080, () =>
+  https.createServer({key:fs.readFileSync('/pki/key'), cert:fs.readFileSync('/pki/cert')}, forward)
+    .listen(8443, () => console.log('ready')));
+"""])
+            deadline = time.monotonic() + 15
+            while "ready" not in command("docker", "logs", edge).splitlines():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("MCP test listeners did not start")
+                time.sleep(.2)
+
+            def target_cli(args, *, trust, expected, no_roots=False):
+                mounts = ["--mount", f"type=bind,source={results},target=/evidence"]
+                if trust:
+                    mounts += ["--mount", f"type=bind,source={ca},target=/etc/ssl/certs/ca-certificates.crt,readonly"]
+                elif no_roots:
+                    mounts += ["-e", "SSL_CERT_FILE=/dev/null", "-e", "SSL_CERT_DIR=/no-roots"]
+                cid = create(network, mounts, image, args)
+                assert command("docker", "wait", cid, timeout=65) == str(expected), command("docker", "logs", cid)
+
+            https_url = "https://target:8443/mcp"
+            for name, url, trust, ok in [
+                ("http", "http://target:8080/mcp", False, True),
+                ("https", https_url, True, True),
+                ("untrusted-ca", https_url, False, False),
+                ("wrong-name", "https://wrong-name:8443/mcp", True, False),
+            ]:
+                revisions = ["--all-protocols"] if ok else ["--protocol", "2025-06-18"]
+                target_cli(["check", "--url", url, *revisions, "--report", f"/evidence/{name}"],
+                           trust=trust, expected=0 if ok else 1, no_roots=name == "http")
+                report = json.loads((results / name / "conformance.json").read_bytes())
+                assert report["verdict"] == ("pass" if ok else "inconclusive"), report
+                if not ok:
+                    assert report["profiles"][0]["checks"][0]["evidence"] == "transport_error", report
+
+            (results / "case.yaml").write_text(f"""run: {{ name: TLS fixture, duration: 1s, seed: 1 }}
+target: {{ url: "{https_url}" }}
+load: {{ users: 1, threads: 1, wait: 100ms, timeout: 5s }}
+tasks: [{{ tool: status, weight: 1, assert_exists: /content/0/text }}]
+assert: {{ min_requests: 1 }}
+""", encoding="utf-8")
+            target_cli(["run", "--headless", "--config", "/evidence/case.yaml", "--report", "/evidence/tls-run"],
+                       trust=True, expected=0)
+            summary = json.loads((results / "tls-run/summary.json").read_bytes())
+            assert summary["calls"]["failed"] == 0 and summary["acceptance"]["status"] == "passed"
+            assert summary["run"]["target_origin"] == "https://target:8443"
+            print("HTTP and HTTPS passed across containers. HTTPS workload passed; untrusted CA and wrong DNS name failed.")
         finally:
             for cid in reversed(containers):
                 command("docker", "rm", "-f", cid)
