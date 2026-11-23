@@ -62,6 +62,14 @@ pub struct Bird {
     /// A new directory for the local report.
     #[arg(long)]
     report: Option<PathBuf>,
+    /// Workload report formats to save (repeat or comma-separate).
+    #[arg(
+        long = "format",
+        value_name = "FORMAT",
+        value_enum,
+        value_delimiter = ','
+    )]
+    report_formats: Option<Vec<report::Format>>,
 }
 
 pub(crate) fn channel(home: &Url) -> Result<Channel> {
@@ -225,10 +233,13 @@ impl Bird {
             }
         };
         ensure!(
-            (self.report.is_none() && self.wait_ms.is_none() && self.protocol.is_none())
+            (self.report.is_none()
+                && self.report_formats.is_none()
+                && self.wait_ms.is_none()
+                && self.protocol.is_none())
                 || self.demo
                 || self.config.is_some(),
-            "--wait, --report and --protocol require a local workload (--demo or --config)"
+            "--wait, --report, --format and --protocol require a local workload (--demo or --config)"
         );
         let reporter = Reporter {
             telemetry: telemetry.clone(),
@@ -242,6 +253,7 @@ impl Bird {
             let cfg = Config::demo(
                 listener.local_addr()?,
                 StartOptions {
+                    report_formats: self.report_formats,
                     users: Some(1),
                     threads: Some(1),
                     protocol: self.protocol,
@@ -261,6 +273,7 @@ impl Bird {
                             Config::read(
                                 &path,
                                 StartOptions {
+                                    report_formats: self.report_formats,
                                     endpoint: self.endpoint,
                                     protocol: self.protocol,
                                     wait_ms: self.wait_ms,
@@ -311,6 +324,13 @@ pub fn spawn_demos(
                 &wait,
                 "--supervised",
             ])
+            .args(
+                config
+                    .report
+                    .formats
+                    .iter()
+                    .flat_map(|f| ["--format", f.name()]),
+            )
             .arg("--report")
             .arg(report_dir.join("birds").join(format!("bird-{n:02}")))
             .stdin(Stdio::piped())

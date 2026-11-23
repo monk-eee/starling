@@ -25,6 +25,10 @@ target:
 #   p99: "< 1000ms"
 #   min_requests: 100
 
+# Save only selected workload outputs. Omit for the full native report bundle.
+# report:
+#   formats: [html, junit]
+
 load:
   users: 2
   threads: 2

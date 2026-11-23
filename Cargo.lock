@@ -2090,6 +2090,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "protox",
+ "regex",
  "reqwest",
  "rmcp",
  "rustls",
@@ -2104,6 +2105,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "unicode-normalization",
  "url",
 ]
 

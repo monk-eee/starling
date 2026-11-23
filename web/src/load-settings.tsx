@@ -1,10 +1,11 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { reportFormat, type ReportFormat } from "./feed";
 
 export type LoadSettings = {
   users: number; threads: number; duration_ms: number; wait_ms: number; timeout_ms: number;
 };
-export type StartOptions = Partial<LoadSettings> & { endpoint?: string; protocol?: string };
+export type StartOptions = Partial<LoadSettings> & { endpoint?: string; protocol?: string; report_formats?: ReportFormat[] };
 
 const durationUnits = [
   { ms: 86400000, label: "days" }, { ms: 3600000, label: "hours" },
@@ -26,13 +27,15 @@ function Slider({ id, label, initial, hint }: { id: string; label: string; initi
   </div>;
 }
 
-export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints, protocol, revisions, onStart, onCheck }: {
+export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints, protocol, revisions, initialFormats, onStart, onCheck }: {
   initial: LoadSettings; maxDurationMs: number; disabled: boolean; endpoint: string; endpoints: string[];
   protocol: string | undefined; revisions: string[] | undefined;
+  initialFormats: ReportFormat[] | undefined;
   onStart: (options: StartOptions) => void;
   onCheck: (options: {endpoint?: string; protocol?: string; all_protocols: boolean}) => void;
 }) {
   const [unit, setUnit] = useState(() => unitFor(initial.duration_ms));
+  const [formats, setFormats] = useState(initialFormats ?? []);
   function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const data = new FormData(e.currentTarget);
@@ -47,6 +50,9 @@ export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints
       return;
     }
     if (typeof revision === "string" && revision !== protocol) options.protocol = revision;
+    if (initialFormats && (formats.length !== initialFormats.length || formats.some(f => !initialFormats.includes(f)))) {
+      options.report_formats = formats;
+    }
     for (const key of ["users", "threads", "duration_ms", "wait_ms", "timeout_ms"] as const) {
       const value = Number(data.get(key));
       const effective = key === "duration_ms" ? Math.round(value * unit) : value;
@@ -83,6 +89,14 @@ export function LoadForm({ initial, maxDurationMs, disabled, endpoint, endpoints
           <input id="timeout_ms" name="timeout_ms" type="number" min="50" max="15000" required
             defaultValue={initial.timeout_ms} /><small>50 to 15,000 ms per operation</small></div>
       </div>
+      {initialFormats && <fieldset className="report-formats">
+        <legend>Save report as</legend>
+        {reportFormat.options.map(f => <label key={f}><input type="checkbox" checked={formats.includes(f)}
+          disabled={formats.length === 1 && formats.includes(f)}
+          onChange={e => setFormats(e.currentTarget.checked ? [...formats, f] : formats.filter(other => other !== f))} />
+          {f === "junit" ? "JUnit XML" : f.toUpperCase()}</label>)}
+        <small>Keep at least one. HTML saves the standalone Starling dashboard.</small>
+      </fieldset>}
       {protocol && revisions && <div className="check-actions">
         <button type="submit" name="check" value="one" formNoValidate>Check revision</button>
         <button type="submit" name="check" value="all" formNoValidate>Check all revisions</button>

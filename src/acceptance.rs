@@ -7,7 +7,9 @@ use serde_json::Number;
 use crate::metrics::Summary;
 
 // Missing rules are optional; an explicitly null rule must not silently disable a gate.
-fn specified<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+pub(crate) fn specified<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
 

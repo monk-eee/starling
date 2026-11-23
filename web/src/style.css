@@ -26,6 +26,9 @@ h2 { font-size: 17px; }
 .workload-file > div { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
 .workload-file a { color: inherit; }
 .workload-file input { max-width: 100%; }
+.paste-yaml summary { cursor: pointer; }
+.paste-yaml label { display: grid; gap: 4px; margin: 8px 0; }
+.paste-yaml textarea { width: 100%; color-scheme: dark; resize: vertical; font: 14px/1.4 ui-monospace, monospace; }
 .flock { margin-top: 18px; padding: 14px 18px; }
 .flock header, .flock-detail { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 16px; }
 .flock header { justify-content: space-between; }
@@ -52,6 +55,11 @@ h2 { font-size: 17px; }
 .flock summary { cursor: pointer; }
 .flock code { overflow-wrap: anywhere; }
 .load-panel legend { padding: 0 6px; font-size: 17px; font-weight: bold; }
+.report-formats { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; margin: 12px 0 0; border: 0; padding: 0; }
+.report-formats legend { padding: 0; font-size: 14px; }
+.report-formats label { display: inline-flex; align-items: center; gap: 4px; }
+.actions { flex-wrap: wrap; }
+.actions select { font: inherit; color-scheme: dark; }
 .load-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 16px; }
 .load-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .load-field > div, .load-summary { display: flex; align-items: baseline; gap: 8px; }
@@ -65,6 +73,11 @@ h2 { font-size: 17px; }
 .check-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
 .check-result { margin: 0 0 16px; padding: 14px 18px; }
 .check-result a { color: #8fe6ca; }
+.case-rows { margin-top: 8px; max-height: 36rem; overflow: auto; }
+.case-rows th, .case-rows td { white-space: normal; text-align: left; vertical-align: top; }
+.case-rows thead { position: sticky; top: 0; background: #18242c; }
+.case-rows small { display: block; }
+.case-passed { color: #74dfc2; } .case-failed, .case-not_run { color: #ffa78f; }
 button, .button { background: #8fe6ca; color: #0c2621; border: 1px solid transparent; font-weight: bold; cursor: pointer; text-decoration: none; }
 button:disabled { opacity: .6; cursor: default; }
 .kpis, .graphs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }

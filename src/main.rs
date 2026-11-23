@@ -1,4 +1,5 @@
 mod acceptance;
+mod assertions;
 mod bird;
 mod check_fleet;
 mod config;
@@ -12,7 +13,7 @@ mod report;
 mod runner;
 mod telemetry;
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{io::Write as _, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -90,6 +91,9 @@ struct RunOutput {
     /// Start immediately without the dashboard (default).
     #[arg(long)]
     headless: bool,
+    /// Emit one native report document on stdout instead of the human summary.
+    #[arg(long, value_name = "FORMAT", value_enum, conflicts_with = "web")]
+    stdout: Option<report::Format>,
     /// Dashboard address. Port 0 selects a free port.
     #[arg(long, value_parser = loopback_addr, requires = "web")]
     listen: Option<SocketAddr>,
@@ -155,7 +159,9 @@ async fn execute(command: Command, telemetry: Arc<Telemetry>) -> Result<()> {
             let address = listener.local_addr()?;
             let cfg = Config::demo(address, options)?;
             let signal = shutdown_signal()?;
-            println!("Demo fixture: http://{address}/mcp");
+            if output.stdout.is_none() {
+                println!("Demo fixture: http://{address}/mcp");
+            }
             fixture::alongside(
                 listener,
                 run_workload(
@@ -171,10 +177,11 @@ async fn execute(command: Command, telemetry: Arc<Telemetry>) -> Result<()> {
         Command::Validate { config, options } => {
             let cfg = Config::read(&config, options)?;
             println!(
-                "Valid: {} users, {} workload threads, {} weighted requests; duration {}, wait {}, timeout {}; endpoint {} ({}); requested MCP {}",
+                "Valid: {} users, {} workload threads, {} {} requests; duration {}, wait {}, timeout {}; endpoint {} ({}); requested MCP {}",
                 cfg.load.users,
                 cfg.load.threads,
                 cfg.tasks.len(),
+                cfg.run.mode.label(),
                 humantime::format_duration(cfg.run.duration),
                 humantime::format_duration(cfg.load.wait),
                 humantime::format_duration(cfg.load.timeout),
@@ -188,6 +195,15 @@ async fn execute(command: Command, telemetry: Arc<Telemetry>) -> Result<()> {
                     serde_json::to_string(&criteria)?
                 );
             }
+            println!(
+                "Report formats: {}",
+                cfg.report
+                    .formats
+                    .iter()
+                    .map(|f| f.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
         Command::Fixture { listen } => {
             let listener = TcpListener::bind(listen).await.context("binding fixture")?;
@@ -286,6 +302,15 @@ async fn run_workload(
         };
         (dir, frame)
     };
+    if let Some(format) = output.stdout {
+        let data = format.primary().render(&frame)?;
+        let mut stdout = std::io::stdout().lock();
+        stdout
+            .write_all(&data)
+            .context("writing report to stdout")?;
+        stdout.flush().context("flushing report to stdout")?;
+        return run_verdict(&frame);
+    }
     finish(&dir, &frame)
 }
 
@@ -294,7 +319,7 @@ fn finish(dir: &std::path::Path, frame: &runner::Frame) -> Result<()> {
         "{} calls, {} failed. Report: {}",
         frame.view.calls.count,
         frame.view.calls.failed,
-        dir.join("index.html").display()
+        report::primary_path(dir, frame).display()
     );
     if let Some(gate) = &frame.view.acceptance {
         println!("Performance gate: {}", gate.status.label());
@@ -309,6 +334,22 @@ fn finish(dir: &std::path::Path, frame: &runner::Frame) -> Result<()> {
             );
         }
     }
+    if !frame.view.assertions.is_empty() {
+        let passed = frame
+            .view
+            .assertions
+            .iter()
+            .filter(|c| c.status == runner::CaseStatus::Passed)
+            .count();
+        println!(
+            "Case assertions: {passed}/{} passed",
+            frame.view.assertions.len()
+        );
+    }
+    run_verdict(frame)
+}
+
+fn run_verdict(frame: &runner::Frame) -> Result<()> {
     if frame.view.status == Status::Failed {
         bail!("{}", frame.view.reason.as_deref().unwrap_or("run failed"));
     }

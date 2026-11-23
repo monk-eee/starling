@@ -22,6 +22,10 @@ that disclosure. Reproduce the assertion locally with a synthetic input.
 Reports are useful for comparing behavior but cannot reconstruct private
 questions. Labels are visible by design: a sensitive run or task name is
 **not** made safe by exporting it. Treat the full workload as private.
+Per-case assertions follow the same boundary: authors may supply a public
+case title and expected-result label. Only those descriptions, outcome
+counts/categories and numeric match ranks are shared, never raw result
+rows, argument-derived titles, matched strings or the underlying patterns.
 
 Run `cargo test --locked --test cli real_sessions_produce_consistent_redacted_offline_reports`
 after [building the dashboard](../../developer.md#build-and-run-from-a-checkout).

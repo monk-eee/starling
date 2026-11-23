@@ -5,6 +5,17 @@ fn sample() -> Config {
 }
 
 #[test]
+fn empty_or_unknown_report_formats_are_rejected() {
+    for invalid in ["[]", "[pdf]", "null", "json,csv"] {
+        let yaml = format!("{STARTER_YAML}\nreport: {{formats: {invalid}}}\n");
+        assert!(
+            Config::from_yaml(&yaml, Default::default()).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 fn malformed_acceptance_criteria_cannot_silently_disable_the_gate() {
     for bad in [
         "{}",

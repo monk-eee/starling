@@ -36,6 +36,8 @@ toml = "1"
 tonic = { version = "0.14", features = ["tls-ring"] }
 tonic-prost = "0.14"
 url = { version = "2", features = ["serde"] }
+regex = "1"
+unicode-normalization = "0.1"
 
 [build-dependencies]
 protox = "0.9"

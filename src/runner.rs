@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     acceptance::{Criteria, GateResult},
-    config::{Config, MAX_DURATION, Method, Protocol, StartOptions},
+    config::{Config, MAX_DURATION, Method, Protocol, RunMode, StartOptions, Task},
     mcp::Session,
     metrics::{Metrics, Outcome, Point, Summary},
     report,
@@ -55,6 +55,8 @@ impl Status {
 #[derive(Clone, Serialize)]
 pub struct RunInfo {
     pub name: String,
+    pub mode: RunMode,
+    pub report_formats: BTreeSet<report::Format>,
     pub target_origin: String,
     pub protocol: &'static str,
     pub protocol_revisions: &'static [crate::config::Standard],
@@ -77,6 +79,8 @@ impl From<&Config> for RunInfo {
     fn from(cfg: &Config) -> Self {
         Self {
             name: cfg.run.name.clone(),
+            mode: cfg.run.mode,
+            report_formats: cfg.report.formats.clone(),
             target_origin: cfg.target.endpoint().origin().ascii_serialization(),
             protocol: cfg.target.protocol.as_str(),
             protocol_revisions: Protocol::REVISIONS,
@@ -118,6 +122,80 @@ pub struct Overview {
     pub protocols: BTreeSet<String>,
     pub calls: Summary,
     pub operations: BTreeMap<String, Summary>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub assertions: Vec<CaseCheck>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaseStatus {
+    Pending,
+    Passed,
+    Failed,
+    NotRun,
+}
+
+#[derive(Clone, Serialize)]
+pub struct CaseCheck {
+    pub operation: String,
+    pub title: String,
+    pub expected: String,
+    pub status: CaseStatus,
+    pub passed: u64,
+    pub failed: u64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failure_kinds: Vec<Outcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_match_rank: Option<usize>,
+}
+
+impl CaseCheck {
+    fn observed(
+        task: &Task,
+        operations: &BTreeMap<String, Summary>,
+        ranks: &BTreeMap<String, usize>,
+        finished: bool,
+    ) -> Self {
+        let operation = task.operation();
+        let (count, failed) = operations
+            .get(&operation)
+            .map_or((0, 0), |s| (s.count, s.failed));
+        let failure_kinds = operations
+            .get(&operation)
+            .iter()
+            .flat_map(|s| s.outcomes.keys().copied())
+            .filter(|outcome| *outcome != Outcome::Success)
+            .collect();
+        let status = match (count, failed, finished) {
+            (_, 1.., _) => CaseStatus::Failed,
+            (1.., _, _) => CaseStatus::Passed,
+            (0, _, true) => CaseStatus::NotRun,
+            _ => CaseStatus::Pending,
+        };
+        let expected = match (&task.assert_match, &task.assert_exists) {
+            (Some(a), Some(_)) => format!("{}; required field exists", a.label),
+            (Some(a), None) => a.label.clone(),
+            (None, Some(_)) => "Required result field exists".into(),
+            (None, None) => "MCP request succeeds".into(),
+        };
+        Self {
+            title: task
+                .title
+                .clone()
+                .or_else(|| task.name.clone())
+                .unwrap_or_else(|| operation.clone()),
+            expected,
+            status,
+            passed: count - failed,
+            failed,
+            failure_kinds,
+            first: task.assert_match.as_ref().map(|a| a.first),
+            last_match_rank: ranks.get(&operation).copied(),
+            operation,
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -137,6 +215,7 @@ struct State {
     protocols: BTreeSet<String>,
     sequence: u64,
     metrics: Metrics,
+    match_ranks: BTreeMap<String, usize>,
 }
 
 impl State {
@@ -144,21 +223,31 @@ impl State {
         self.started.map_or(Duration::ZERO, |t| t.elapsed())
     }
 
-    fn frame(&mut self, info: &RunInfo, finish: bool) -> Frame {
+    fn frame(&mut self, cfg: &Config, finish: bool) -> Frame {
         let elapsed = self.elapsed();
         self.metrics.seal(elapsed, finish);
         let (calls, operations) = self.metrics.summarize();
         let acceptance = if finish {
-            self.finalize(&calls, info.acceptance.as_ref())
+            self.finalize(&calls, cfg)
         } else {
             None
         };
         self.sequence += 1;
+        let assertions = cfg
+            .tasks
+            .iter()
+            .filter(|t| {
+                cfg.run.mode == RunMode::Once
+                    || t.assert_match.is_some()
+                    || t.assert_exists.is_some()
+            })
+            .map(|t| CaseCheck::observed(t, &operations, &self.match_ranks, finish))
+            .collect();
         Frame {
             view: Overview {
                 schema_version: 1,
                 sequence: self.sequence,
-                run: info.clone(),
+                run: cfg.into(),
                 status: self.status,
                 reason: self.failure.clone(),
                 acceptance,
@@ -173,14 +262,27 @@ impl State {
                 protocols: self.protocols.clone(),
                 calls,
                 operations,
+                assertions,
             },
             series: self.metrics.series.clone(),
         }
     }
 
-    fn finalize(&mut self, calls: &Summary, criteria: Option<&Criteria>) -> Option<GateResult> {
-        let gate =
-            criteria.map(|c| c.evaluate(calls, !self.stopped_by_user && self.failure.is_none()));
+    fn finalize(&mut self, calls: &Summary, cfg: &Config) -> Option<GateResult> {
+        if cfg.run.mode == RunMode::Once
+            && self.failure.is_none()
+            && calls.count < cfg.tasks.len() as u64
+        {
+            self.failure = Some(format!(
+                "once run incomplete: executed {} of {} cases",
+                calls.count,
+                cfg.tasks.len()
+            ));
+        }
+        let gate = cfg
+            .acceptance
+            .as_ref()
+            .map(|c| c.evaluate(calls, !self.stopped_by_user && self.failure.is_none()));
         if self.failure.is_none() {
             self.failure = if calls.failed > 0 {
                 Some("one or more workload requests failed".into())
@@ -213,7 +315,6 @@ pub struct Run {
 
 impl Run {
     pub fn new(cfg: Config, telemetry: Arc<Telemetry>) -> Arc<Self> {
-        let info = RunInfo::from(&cfg);
         let mut state = State {
             status: Status::Ready,
             started: None,
@@ -224,8 +325,9 @@ impl Run {
             protocols: BTreeSet::new(),
             sequence: 0,
             metrics: Metrics::new(cfg.run.duration),
+            match_ranks: BTreeMap::new(),
         };
-        let (feed, _) = watch::channel(Arc::new(state.frame(&info, false)));
+        let (feed, _) = watch::channel(Arc::new(state.frame(&cfg, false)));
         Arc::new(Self {
             telemetry,
             defaults: cfg,
@@ -251,7 +353,7 @@ impl Run {
 
     fn publish(&self, state: &mut State) {
         self.feed
-            .send_replace(Arc::new(state.frame(&self.config().into(), false)));
+            .send_replace(Arc::new(state.frame(self.config(), false)));
     }
 
     pub fn start(&self, options: StartOptions) -> Result<bool> {
@@ -377,8 +479,17 @@ impl Run {
     async fn call_loop(&self, id: u32, session: &Session) {
         let cfg = self.config();
         let mut rng = fastrand::Rng::with_seed(cfg.run.seed.wrapping_add(u64::from(id)));
+        let mut assigned = (id as usize..cfg.tasks.len())
+            .step_by(cfg.load.users as usize)
+            .peekable();
         loop {
-            let task = cfg.pick(&mut rng);
+            let task = match cfg.run.mode {
+                RunMode::Weighted => cfg.pick(&mut rng),
+                RunMode::Once => match assigned.next() {
+                    Some(i) => &cfg.tasks[i],
+                    None => break,
+                },
+            };
             let key = task.operation();
             match self
                 .measured(&key, Some(task.method), session.call(task))
@@ -389,7 +500,13 @@ impl Run {
                     self.halt(false, Some(format!("{} failed: {}", key, e.label())));
                     break;
                 }
+                Some(Ok(Some(rank))) => {
+                    self.state.lock().unwrap().match_ranks.insert(key, rank);
+                }
                 _ => (),
+            }
+            if cfg.run.mode == RunMode::Once && assigned.peek().is_none() {
+                break;
             }
             if !cfg.load.wait.is_zero() {
                 tokio::select! {
@@ -402,7 +519,13 @@ impl Run {
 
     async fn drive(self: &Arc<Self>, start: Instant) {
         let mut workers = JoinSet::new();
-        for id in 0..self.config().load.users {
+        let cfg = self.config();
+        let users = if cfg.run.mode == RunMode::Once {
+            cfg.load.users.min(cfg.tasks.len() as u32)
+        } else {
+            cfg.load.users
+        };
+        for id in 0..users {
             let run = self.clone();
             workers.spawn(async move { run.worker(id).await });
         }
@@ -455,11 +578,7 @@ impl Run {
                 }
             }
         }
-        let mut frame = self
-            .state
-            .lock()
-            .unwrap()
-            .frame(&self.config().into(), true);
+        let mut frame = self.state.lock().unwrap().frame(self.config(), true);
         // Publish terminal success only after the offline report is readable.
         let frame = match report::write(&directory, &frame) {
             Ok(()) => Arc::new(frame),

@@ -5,7 +5,7 @@ use axum::{
     Extension, Json, Router,
     body::Bytes,
     extract::{
-        DefaultBodyLimit, Request, State,
+        DefaultBodyLimit, Query, Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{Method, StatusCode, header},
@@ -141,7 +141,7 @@ pub async fn serve(
             };
             println!(
                 "Report: {}. Dashboard remains open; Ctrl+C to exit.",
-                slot.dir.join("index.html").display()
+                report::primary_path(&slot.dir, &frame).display()
             );
             tokio::select! {
                 biased;
@@ -292,7 +292,7 @@ async fn load_yaml(State(controller): State<Controller>, body: String) -> Respon
 }
 
 fn prepare_run(controller: &Controller, workload: Option<Config>) -> Response {
-    let mut status = StatusCode::CONFLICT;
+    let mut response = StatusCode::CONFLICT.into_response();
     controller.send_if_modified(|slot| {
         let state = slot.run.snapshot().view.status;
         if !state.terminal() && !(state == crate::runner::Status::Ready && workload.is_some()) {
@@ -313,36 +313,70 @@ fn prepare_run(controller: &Controller, workload: Option<Config>) -> Response {
                     ),
                     dir,
                 };
-                status = StatusCode::ACCEPTED;
+                response = (
+                    StatusCode::ACCEPTED,
+                    Json(serde_json::json!({ "generation": slot.generation })),
+                )
+                    .into_response();
                 true
             }
             Err(_) => {
                 slot.run
                     .telemetry
                     .event(Level::Error, "report_reservation_failed");
-                status = StatusCode::INTERNAL_SERVER_ERROR;
+                response = StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 false
             }
         }
     });
-    status.into_response()
+    response
 }
 
-async fn export(State(controller): State<Controller>) -> Response {
-    let frame = controller.borrow().run.snapshot();
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportQuery {
+    file: Option<String>,
+}
+
+async fn export(
+    State(controller): State<Controller>,
+    Query(query): Query<ExportQuery>,
+) -> Response {
+    let run = controller.borrow().run.clone();
+    let frame = run.snapshot();
     if !frame.view.status.terminal() {
         return StatusCode::CONFLICT.into_response();
     }
-    match report::html(&frame) {
-        Ok(page) => (
-            [(
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=\"starling-report.html\"",
-            )],
-            Html(page),
-        )
-            .into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let Some(file) = report::Artifact::named(query.file.as_deref().unwrap_or("index.html")) else {
+        return (StatusCode::BAD_REQUEST, "Unknown report file.").into_response();
+    };
+    match file.render(&frame) {
+        Ok(bytes) => {
+            let name = if matches!(file, report::Artifact::Dashboard) {
+                "starling-report.html"
+            } else {
+                file.name()
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, file.content_type().to_owned()),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{name}\""),
+                    ),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(_) => {
+            run.telemetry.event(Level::Error, "report_export_failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not export the run report.",
+            )
+                .into_response()
+        }
     }
 }
 

@@ -70,7 +70,7 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     expect((await request.post(start, { headers: { Origin: "https://other.invalid", "X-Starling-Control": "1" } })).status()).toBe(403);
     const headers = { "X-Starling-Control": "1" };
     expect((await request.post(start, { headers, data: { protocol: "not-a-revision" } })).status()).toBe(400);
-    for (const data of [{ users: 9 }, { threads: 0 }, { duration_ms: 999 }, { duration_ms: 604800001 }, { wait_ms: 60001 }, { timeout_ms: 15001 }]) {
+    for (const data of [{ users: 9 }, { threads: 0 }, { duration_ms: 999 }, { duration_ms: 604800001 }, { wait_ms: 60001 }, { timeout_ms: 15001 }, { report_formats: [] }]) {
       expect((await request.post(start, { headers, data })).status()).toBe(422);
     }
     const users = page.getByRole("slider", { name: "Concurrent users" });
@@ -147,6 +147,9 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     await duration.fill("1.5");
     await expect(wait).toHaveValue("400");
     await wait.fill("0");
+    const formats = page.getByRole("group", { name: "Save report as" });
+    await formats.getByLabel("HTML", {exact:true}).uncheck();
+    await formats.getByLabel("CSV", {exact:true}).uncheck();
     await page.getByRole("button", { name: "Start run" }).click();
     await expect(status).toHaveText("completed");
     const second = frames.at(-1);
@@ -158,6 +161,15 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     const sibling = (await readdir(dirname(report))).find(name => name.startsWith("run-"));
     expect(sibling).toBeTruthy();
     expect(JSON.parse(await readFile(join(dirname(report), sibling, "run.json"), "utf8"))).toMatchObject(second.run);
+    const secondDir = join(dirname(report), sibling);
+    expect((await readdir(secondDir)).sort()).toEqual(["junit.xml","run.json","summary.json","timeseries.json"]);
+    await page.getByLabel("Download file").selectOption("junit.xml");
+    const download = await page.getByRole("link",{name:"Export junit.xml"}).getAttribute("href");
+    const xml = await request.get(new URL(download, url).href);
+    expect(xml.headers()["content-type"]).toBe("application/xml");
+    expect(await xml.body()).toEqual(await readFile(join(secondDir, "junit.xml")));
+    expect((await request.get(`${url}/api/v1/runs/local/export?file=workload.yaml`)).status()).toBe(400);
+    expect((await request.get(`${url}/api/v1/runs/local/export`)).status()).toBe(200);
     expect(await readFile(file)).toEqual(firstReport);
     const wsCount = frames.length;
     await captureCoverage(page, info, "before-offline");
@@ -190,7 +202,7 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
       server.onMessage(message => { if (forwardRoster) client.send(message); });
     });
     const report = info.outputPath("imported");
-    const url = await launch(["demo","--web","--birds","1","--protocol","2025-06-18","--wait","375ms","--report",report], "Dashboard: ", children);
+    const url = await launch(["demo","--web","--birds","1","--protocol","2025-06-18","--wait","375ms","--format","json","--report",report], "Dashboard: ", children);
     await page.goto(url);
     const status = page.getByRole("status", {name:"Run status"});
     await expect(status).toHaveText("ready");
@@ -238,17 +250,36 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
       .replace(`url: ${actualEndpoint}`, `url: https://other.invalid/mcp\n  endpoints: { candidate: "${actualEndpoint}" }`)
       .replace('protocol: "2025-11-25"', 'protocol: "2025-03-26"')
       .replace("30s","3s").replace("How do I get started?", "PRIVATE_UPLOAD_QUESTION")
-      + "\nassert:\n  p95: '< 15s'\n  min_requests: 1\n";
-    const upload = page.getByLabel("Load YAML");
+      + "\nreport:\n  formats: [html, json]\nassert:\n  p95: '< 15s'\n  min_requests: 1\n";
+    const upload = page.getByLabel("Load YAML", {exact:true});
     await upload.setInputFiles({name:"broken.yaml",mimeType:"application/yaml",buffer:Buffer.from("run: [")});
     await expect(page.getByRole("alert")).toContainText("Could not load workload:");
     await expect(status).toHaveText("ready");
-    await upload.setInputFiles({name:"scenario.yaml",mimeType:"application/yaml",buffer:Buffer.from(yaml)});
+    await page.getByText("Paste YAML instead", {exact:true}).click();
+    await page.getByLabel("YAML text", {exact:true}).fill(yaml.replace("Example questions","Paste preview"));
+    await page.getByRole("button",{name:"Load pasted YAML"}).click();
+    const loaded = page.getByRole("status",{name:"Loaded workload"});
+    await expect(loaded).toContainText("Loaded pasted YAML: Paste preview.");
+    await expect(page.getByLabel("YAML text",{exact:true})).toHaveValue("");
+    const file = info.outputPath("scenario.yaml");
+    await writeFile(file,yaml);
+    const chooser = page.waitForEvent("filechooser");
+    const accepted = page.waitForResponse(r => r.url() === load && r.request().method() === "POST");
+    await upload.click();
+    await (await chooser).setFiles(file);
+    const receipt = await accepted;
+    expect(receipt.status()).toBe(202);
+    expect((await receipt.json()).generation).toBeGreaterThan(1);
+    await expect(loaded).toContainText("Loaded scenario.yaml: Example questions.");
+    await expect(upload).toHaveValue(/scenario\.yaml$/);
+    expect((await (await request.get(`${url}/api/v1/runs/local`)).json()).calls.count).toBe(0);
     await expect(page.getByRole("heading",{name:"Example questions"})).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(status).toHaveText("ready");
     await expect(page.getByRole("spinbutton",{name:"Duration",exact:true})).toHaveValue("3");
     await expect(page.getByRole("combobox",{name:"MCP protocol revision"})).toHaveValue("2025-03-26");
+    await expect(page.getByRole("checkbox",{name:"HTML",exact:true})).toBeChecked();
+    await expect(page.getByRole("checkbox",{name:"CSV",exact:true})).not.toBeChecked();
     const gate = page.getByRole("region", {name: "Performance gate"});
     await expect(gate).toContainText("min_requests >= 1");
     await page.getByRole("combobox",{name:"Endpoint",exact:true}).selectOption("candidate");
@@ -267,7 +298,8 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     expect(complete.acceptance.status).toBe("passed");
     await expect.poll(async () => (await roster()).find(b => b.id === "bird-01")?.state, {timeout: 20000}).toBe("completed");
     const childReport = JSON.parse(await readFile(join(report,"birds","bird-01","summary.json"),"utf8"));
-    expect(childReport.run).toMatchObject({ wait_ms: 375, protocol: "2025-06-18" });
+    expect(childReport.run).toMatchObject({ wait_ms: 375, protocol: "2025-06-18", report_formats:["json"] });
+    expect((await readdir(join(report,"birds","bird-01"))).sort()).toEqual(["run.json","summary.json","timeseries.json"]);
     expect(childReport.protocols).toEqual(["2025-06-18"]);
 
     await page.getByRole("button", {name:"Configure next run"}).click();
@@ -285,5 +317,40 @@ test("import a scenario, observe independent birds and reconnect a stale bird", 
     await page.goto(pathToFileURL(join(report, "index.html")).href);
     await expect(gate.getByRole("heading")).toHaveText("Performance gate: passed");
     await expect(gate.getByRole("row", { name: /min_requests/ })).toContainText(`${complete.calls.count} requests`);
+  } finally { await Promise.all(children.reverse().map(stopChild)); }
+});
+test("show a once-per-case assertion suite in the live and offline dashboard", async ({page,request},info) => {
+  const children=[];
+  try {
+    const target=await launch(["fixture","--listen","127.0.0.1:0"],"Fixture: ",children);
+    const config=info.outputPath("cases.yaml"), report=info.outputPath("native");
+    await mkdir(dirname(config),{recursive:true});
+    const tasks=Array.from({length:25},(_,i)=>({name:`case-${i+1}`,title:`Question ${i+1}`,tool:"echo",weight:1,
+      arguments:{text:"PRIVATE_BROWSER_EVIDENCE ready"},assert_match:{label:"Response contains ready",path:"/content",first:5,
+        all:[{path:"/text",matches:[i===24?"PRIVATE_ABSENT":"ready"]}]}}));
+    await writeFile(config,JSON.stringify({run:{name:"Fixture cases",mode:"once",seed:42,duration:"45s"},
+      target:{url:target,protocol:"2025-06-18"},load:{users:1,timeout:"3s",wait:0},
+      report:{formats:["html","yaml"]},tasks}));
+    const url=await launch(["run","--web","--listen","127.0.0.1:0","--config",config,"--report",report],"Dashboard: ",children);
+    await page.goto(url);
+    const cases=page.getByRole("region",{name:"Case assertions"});
+    await expect(cases.getByRole("heading")).toHaveText("Case assertions: 0/25 passed");
+    await expect(cases.getByRole("row")).toHaveCount(26);
+    await expect(cases.getByText("Pending",{exact:true})).toHaveCount(25);
+    await page.getByRole("button",{name:"Start run",exact:true}).click();
+    await expect(cases.getByRole("heading")).toHaveText("Case assertions: 24/25 passed");
+    await expect(page.getByRole("status",{name:"Run status"})).toHaveText("failed");
+    await expect(cases.getByRole("row").last()).toContainText("Failed");
+    await expect(cases.getByText("Last match: #1",{exact:true})).toHaveCount(24);
+    await page.getByLabel("Download file").selectOption("summary.yaml");
+    const link=await page.getByRole("link",{name:"Export summary.yaml"}).getAttribute("href");
+    const response=await request.get(new URL(link,url).href);
+    expect(response.headers()["content-type"]).toBe("application/yaml");
+    expect(await response.body()).toEqual(await readFile(join(report,"summary.yaml")));
+    await page.context().setOffline(true);
+    await page.goto(pathToFileURL(join(report,"index.html")).href);
+    await expect(cases.getByRole("heading")).toHaveText("Case assertions: 24/25 passed");
+    await expect(cases.getByRole("row").last()).toContainText("Question 25");
+    expect(await readFile(join(report,"index.html"),"utf8")).not.toContain("PRIVATE_BROWSER_EVIDENCE");
   } finally { await Promise.all(children.reverse().map(stopChild)); }
 });

@@ -51,6 +51,8 @@ pub struct Config {
     pub load: Load,
     pub tasks: Vec<Task>,
     #[serde(default)]
+    pub report: crate::report::ReportOptions,
+    #[serde(default)]
     pub conformance: ConformanceOptions,
     #[serde(
         default,
@@ -70,9 +72,28 @@ pub struct ConformanceOptions {
 #[serde(deny_unknown_fields)]
 pub struct RunConfig {
     pub name: String,
+    #[serde(default)]
+    pub mode: RunMode,
     #[serde(with = "humantime_serde")]
     pub duration: Duration,
     pub seed: u64,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunMode {
+    #[default]
+    Weighted,
+    Once,
+}
+
+impl RunMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Weighted => "weighted",
+            Self::Once => "once-per-case",
+        }
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -285,6 +306,14 @@ pub fn cli_millis(text: &str) -> Result<u64, String> {
 #[derive(clap::Args, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StartOptions {
+    /// Workload report formats to save (repeat or comma-separate; default: html,json,csv,junit).
+    #[arg(
+        long = "format",
+        value_name = "FORMAT",
+        value_enum,
+        value_delimiter = ','
+    )]
+    pub report_formats: Option<Vec<crate::report::Format>>,
     /// One named target.endpoints entry, or "default" for target.url.
     #[arg(long, value_name = "NAME")]
     pub endpoint: Option<String>,
@@ -312,6 +341,7 @@ pub struct StartOptions {
 #[serde(deny_unknown_fields)]
 pub struct Task {
     pub name: Option<String>,
+    pub title: Option<String>,
     #[serde(default)]
     pub method: Method,
     pub tool: Option<String>,
@@ -320,6 +350,8 @@ pub struct Task {
     #[serde(default)]
     pub arguments: Map<String, Value>,
     pub assert_exists: Option<String>,
+    #[serde(default, deserialize_with = "crate::acceptance::specified")]
+    pub assert_match: Option<crate::assertions::MatchAssertion>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Deserialize)]
@@ -357,6 +389,15 @@ impl Task {
     }
 
     fn validate_request(&self) -> Result<()> {
+        ensure!(
+            self.title
+                .as_deref()
+                .is_none_or(crate::assertions::public_text),
+            "task.title must be 1-200 printable bytes"
+        );
+        if let Some(assertion) = &self.assert_match {
+            assertion.validate()?;
+        }
         ensure!(
             self.name.as_deref().is_none_or(valid_label),
             "task.name must be a public 1-64 character identifier"
@@ -414,6 +455,9 @@ impl Config {
     }
 
     pub fn with_options(mut self, options: StartOptions) -> Result<Self> {
+        if let Some(formats) = options.report_formats {
+            self.report.formats = formats.into_iter().collect();
+        }
         if let Some(name) = options.endpoint {
             self.target.selected = Some(name);
         }
@@ -469,6 +513,10 @@ impl Config {
     }
 
     fn validate(&mut self) -> Result<()> {
+        ensure!(
+            !self.report.formats.is_empty(),
+            "select at least one report format"
+        );
         if let Some(criteria) = &self.acceptance {
             criteria.validate()?;
         }
@@ -517,7 +565,15 @@ impl Config {
             );
             validate_url(url)?;
         }
-        ensure!((1..=16).contains(&self.tasks.len()), "configure 1-16 tasks");
+        let max_tasks = if self.run.mode == RunMode::Once {
+            64
+        } else {
+            16
+        };
+        ensure!(
+            (1..=max_tasks).contains(&self.tasks.len()),
+            "configure 1-{max_tasks} tasks"
+        );
         let mut names = BTreeSet::new();
         for task in &self.tasks {
             task.validate_request()?;
@@ -529,14 +585,13 @@ impl Config {
                 (1..=1000).contains(&task.weight),
                 "task weights must be 1-1000"
             );
+            ensure!(
+                self.run.mode != RunMode::Once || task.weight == 1,
+                "once mode requires weight 1 for every case"
+            );
             if let Some(pointer) = &task.assert_exists {
                 ensure!(
-                    pointer.starts_with('/')
-                        && pointer.len() <= 256
-                        && pointer
-                            .split('~')
-                            .skip(1)
-                            .all(|s| s.starts_with(['0', '1'])),
+                    crate::assertions::valid_pointer(pointer),
                     "assert_exists must be a JSON Pointer, e.g. /content/0/text"
                 );
             }
