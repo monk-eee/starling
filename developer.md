@@ -320,8 +320,8 @@ artifact also has a browsable `html/index.html`. There is no combined score.
 
 | Check | What runs | Minimum |
 |---|---|---|
-| Rust | Unit and CLI tests, including their instrumented child processes and the two Unix shutdown tests | 75% of executable lines |
-| Dashboard | Chromium drives the real CLI and embedded dashboard, including reload and opening an exported report offline | 90% of executable lines and 80% of branches |
+| Rust | Unit and CLI tests, including controller lifecycle, live resynchronization, instrumented child processes and Unix shutdown | 90% of executable lines |
+| Dashboard | Chromium drives the real CLI and embedded dashboard, including rejected controls, reconnects and opening an exported report offline | 90% of executable lines and 90% of branches |
 
 From the clone on macOS or Linux, with Python 3, Node 22 and the pinned Rust
 toolchain available:

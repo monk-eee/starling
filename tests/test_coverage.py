@@ -15,11 +15,19 @@ class CoverageChecks(unittest.TestCase):
                 summarize("rust", records, files)
 
     def test_full_line_coverage_cannot_hide_a_branch_regression(self):
-        data = "SF:web/src/view.ts\nDA:7,1\n" + "".join(f"BRDA:7,0,{i},{int(i < 4)}\n" for i in range(5))
+        data = "SF:web/src/view.ts\nDA:7,1\n" + "".join(f"BRDA:7,0,{i},{int(i < 9)}\n" for i in range(10))
         files = {"web/src/view.ts"}
         self.assertFalse(summarize("dashboard", data + "end_of_record", files)[2])
-        failed = summarize("dashboard", data.replace("BRDA:7,0,3,1", "BRDA:7,0,3,0") + "end_of_record", files)[2]
-        self.assertEqual(failed, ["branches: 3/5 does not meet 80%"])
+        failed = summarize("dashboard", data.replace("BRDA:7,0,8,1", "BRDA:7,0,8,0") + "end_of_record", files)[2]
+        self.assertEqual(failed, ["branches: 8/10 does not meet 90%"])
+
+    def test_rust_floor_uses_exact_counts_even_when_the_display_rounds_up(self):
+        files = {"src/core.rs"}
+        data = "SF:src/core.rs\n" + "".join(f"DA:{n},{int(n <= 18000)}\n" for n in range(1, 20001))
+        self.assertFalse(summarize("rust", data + "end_of_record", files)[2])
+        _, summary, failed = summarize("rust", data + "DA:20001,0\nend_of_record", files)
+        self.assertIn("18000/20001 (90.00%)", summary)
+        self.assertEqual(failed, ["lines: 18000/20001 does not meet 90%"])
 
 
 if __name__ == "__main__":

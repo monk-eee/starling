@@ -8,9 +8,7 @@ use tokio::net::TcpListener;
 
 #[tokio::test]
 async fn campaign_accepts_complete_evidence_once_and_rejects_spliced_reports() {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("test process TLS provider");
+    crate::tests::install_test_tls();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let cfg = Config::demo(listener.local_addr().unwrap(), StartOptions::default()).unwrap();
     let revisions = vec![cfg.target.protocol];
