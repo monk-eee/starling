@@ -12,6 +12,8 @@ mod metrics;
 mod report;
 mod runner;
 mod telemetry;
+#[cfg(test)]
+mod tests;
 
 use std::{io::Write as _, net::SocketAddr, path::PathBuf, sync::Arc};
 

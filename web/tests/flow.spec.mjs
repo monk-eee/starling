@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -150,6 +151,7 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     const formats = page.getByRole("group", { name: "Save report as" });
     await formats.getByLabel("HTML", {exact:true}).uncheck();
     await formats.getByLabel("CSV", {exact:true}).uncheck();
+    await formats.getByLabel("YAML", {exact:true}).check();
     await page.getByRole("button", { name: "Start run" }).click();
     await expect(status).toHaveText("completed");
     const second = frames.at(-1);
@@ -162,7 +164,7 @@ test("start, receive live metrics, reconnect, stop and reopen the same report of
     expect(sibling).toBeTruthy();
     expect(JSON.parse(await readFile(join(dirname(report), sibling, "run.json"), "utf8"))).toMatchObject(second.run);
     const secondDir = join(dirname(report), sibling);
-    expect((await readdir(secondDir)).sort()).toEqual(["junit.xml","run.json","summary.json","timeseries.json"]);
+    expect((await readdir(secondDir)).sort()).toEqual(["junit.xml","run.json","summary.json","summary.yaml","timeseries.json"]);
     await page.getByLabel("Download file").selectOption("junit.xml");
     const download = await page.getByRole("link",{name:"Export junit.xml"}).getAttribute("href");
     const xml = await request.get(new URL(download, url).href);
@@ -352,5 +354,122 @@ test("show a once-per-case assertion suite in the live and offline dashboard", a
     await expect(cases.getByRole("heading")).toHaveText("Case assertions: 24/25 passed");
     await expect(cases.getByRole("row").last()).toContainText("Question 25");
     expect(await readFile(join(report,"index.html"),"utf8")).not.toContain("PRIVATE_BROWSER_EVIDENCE");
+  } finally { await Promise.all(children.reverse().map(stopChild)); }
+});
+
+test("rejected controls keep the current workload and a timed-out target cannot pass", async ({page,request},info) => {
+  const children = [];
+  const silent = createServer(() => {}); // Accept loopback requests but never finish initialization.
+  await new Promise(resolve => silent.listen(0, "127.0.0.1", resolve));
+  try {
+    const report = info.outputPath("report"), config = info.outputPath("timeout.yaml");
+    await mkdir(dirname(config), {recursive:true});
+    await writeFile(config, JSON.stringify({
+      run:{name:"Timeout case", mode:"once", seed:1, duration:"10s"},
+      target:{url:`http://127.0.0.1:${silent.address().port}/mcp`, protocol:"2025-06-18"},
+      load:{users:1, timeout:"500ms"}, tasks:[{tool:"status",weight:1}],
+      assert:{min_requests:1,p95:"< 1s"},
+    }));
+    const url = await launch(["run","--web","--listen","127.0.0.1:0","--config",config,"--report",report],
+      "Dashboard: ", children);
+    const api = `${url}/api/v1/runs/local`;
+    await page.goto(url);
+    const status = page.getByRole("status",{name:"Run status"});
+    const upload = page.getByLabel("Load YAML",{exact:true});
+    const yamlError = page.getByRole("region",{name:"YAML workload"}).getByRole("alert");
+    await expect(status).toHaveText("ready");
+    let uploads = 0;
+    page.on("request", req => { if (req.url() === `${api}/workload`) uploads++; });
+    await upload.setInputFiles({ name:"oversize.yaml", mimeType:"application/yaml", buffer:Buffer.alloc(65537, 32) });
+    await expect(yamlError).toContainText("64 KiB or smaller");
+    await upload.setInputFiles({ name:"bad-encoding.yaml", mimeType:"application/yaml", buffer:Buffer.from([0xff]) });
+    await expect(yamlError).toContainText("Could not read the file as UTF-8");
+    expect(uploads).toBe(0);
+
+    await page.route(`${api}/workload`, route => route.fulfill({status:409}), {times:1});
+    await upload.setInputFiles(config);
+    await expect(yamlError).toContainText("A run is already in progress");
+    await expect(page.getByRole("status",{name:"Loaded workload"})).toContainText("Current workload: Timeout case");
+    const retry = page.waitForEvent("filechooser");
+    await upload.click();
+    await (await retry).setFiles(config);
+    await expect(page.getByRole("status",{name:"Loaded workload"})).toContainText("Loaded timeout.yaml: Timeout case");
+    await expect(yamlError).toHaveCount(0);
+
+    const check = page.getByRole("button",{name:"Check revision",exact:true});
+    const alert = page.getByRole("alert");
+    await page.route(`${api}/check`, route => route.fulfill({status:503}), {times:1});
+    await check.click();
+    await expect(alert).toHaveText("Could not check conformance: HTTP 503.");
+    await check.click();
+    const evidence = page.getByRole("region",{name:"MCP conformance report"});
+    await expect(evidence.getByRole("heading",{name:"MCP conformance: inconclusive"})).toBeVisible();
+    await expect(evidence).toContainText("Negotiated: none");
+    await expect(alert).toHaveCount(0);
+    expect((await (await request.get(api)).json()).calls.count).toBe(0);
+
+    const start = page.getByRole("button",{name:"Start run",exact:true});
+    await page.route(`${api}/start`, route => route.continue({postData:JSON.stringify({users:0})}), {times:1});
+    await start.click();
+    await expect(alert).toContainText("Could not start this run: load.users must be 1-8");
+    await expect(status).toHaveText("ready");
+    await start.click();
+    await expect(status).toHaveText("failed");
+    await expect(page.getByText("No negotiated revision recorded",{exact:false})).toBeVisible();
+    const gate = page.getByRole("region",{name:"Performance gate"});
+    await expect(gate.getByRole("heading")).toHaveText("Performance gate: incomplete");
+    await expect(gate.getByRole("row",{name:/p95/})).toContainText("No samples");
+    await expect(page.getByRole("region",{name:"Case assertions"})).toContainText("Not run");
+    const saved = JSON.parse(await readFile(join(report,"summary.json"),"utf8"));
+    expect(saved.calls.count).toBe(0);
+    const next = page.getByRole("button",{name:"Configure next run"});
+    await page.route(`${api}/next`, route => route.fulfill({status:503}), {times:1});
+    await next.click();
+    await expect(page.getByText("Could not prepare the next run: HTTP 503.",{exact:true})).toBeVisible();
+    await expect(status).toHaveText("failed");
+    await next.click();
+    await expect(status).toHaveText("ready");
+    await expect(alert).toHaveCount(0);
+  } finally {
+    await Promise.all(children.reverse().map(stopChild));
+    silent.closeAllConnections();
+    await new Promise(resolve => silent.close(resolve));
+  }
+});
+
+test("a gap requests a snapshot and an invalid feed reconnects without displaying bad metrics", async ({page,request},info) => {
+  const children = [];
+  try {
+    const url = await launch(["demo","--web","--report",info.outputPath("report")],"Dashboard: ",children);
+    const frame = await (await request.get(`${url}/api/v1/runs/local`)).json();
+    const connections = [];
+    let resyncs = 0;
+    await page.routeWebSocket("**/api/v1/runs/local/live", ws => {
+      connections.push(ws);
+      ws.onMessage(text => { if (text === "snapshot") resyncs++; });
+      if (connections.length === 1) ws.send(JSON.stringify({...frame, type:"snapshot", generation:1}));
+    });
+    await page.goto(url);
+    const connection = page.getByRole("navigation").locator("small");
+    const title = page.getByRole("heading",{level:1});
+    const start = page.getByRole("button",{name:"Start run",exact:true});
+    await expect(connection).toHaveText("Connected");
+    const gap = {...frame, generation:1, type:"tick", sequence:frame.sequence+2, run:{...frame.run, name:"Skipped state"}};
+    connections[0].send(JSON.stringify(gap));
+    await expect.poll(() => resyncs).toBe(1);
+    await expect(title).toHaveText(frame.run.name);
+    connections[0].send(JSON.stringify({...gap, type:"snapshot",run:{...frame.run,name:"Restored snapshot"}}));
+    await expect(title).toHaveText("Restored snapshot");
+
+    connections[0].send(JSON.stringify({schema_version:99}));
+    await expect(page.getByRole("alert")).toContainText("incompatible metrics frame");
+    await expect(connection).toHaveText("Reconnecting");
+    await expect(start).toBeDisabled();
+    await expect.poll(() => connections.length).toBe(2);
+    connections[1].send(JSON.stringify({...frame, type:"snapshot", generation:2}));
+    await expect(connection).toHaveText("Connected");
+    await expect(title).toHaveText(frame.run.name);
+    await expect(start).toBeEnabled();
+    await expect(page.getByRole("alert")).toHaveCount(0);
   } finally { await Promise.all(children.reverse().map(stopChild)); }
 });

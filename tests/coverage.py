@@ -7,7 +7,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
-FLOORS = {"rust": {"lines": 75}, "dashboard": {"lines": 90, "branches": 80}}
+FLOORS = {"rust": {"lines": 90}, "dashboard": {"lines": 90, "branches": 90}}
 
 
 def sources(suite):
