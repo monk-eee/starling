@@ -14,20 +14,20 @@ You need Git, [rustup](https://rustup.rs/) (Rust 1.99; the checkout pins
 a native linker (Xcode Command Line Tools on macOS, `build-essential` on
 Debian/Ubuntu). Build the web assets first: Cargo embeds them in the binary.
 
-Install the [v0.3.0 source release](https://github.com/monk-eee/starling/releases/tag/v0.3.0):
+Install the [v0.4.0 source release](https://github.com/monk-eee/starling/releases/tag/v0.4.0):
 
 ```sh
-git clone --branch v0.3.0 https://github.com/monk-eee/starling.git
+git clone --branch v0.4.0 https://github.com/monk-eee/starling.git
 cd starling
 npm --prefix web ci
 npm --prefix web run build
 cargo install --path . --locked
-starling --version  # starling 0.3.0
+starling --version  # starling 0.4.0
 ```
 
 If `starling` is not found after installing, add Cargo's bin directory to
 your shell's `PATH` (usually `export PATH="$HOME/.cargo/bin:$PATH"`).
-To build the development version instead, omit `--branch v0.3.0` when cloning.
+To build the development version instead, omit `--branch v0.4.0` when cloning.
 
 Once installed, the binary contains the dashboard, fixture and starter YAML.
 You do not need this checkout, Node.js, a second repository, or a collector
@@ -201,12 +201,11 @@ start a web server.
 | Manually launched bird with `--config` or `--demo` | The report path printed by that bird, on its host. Add `--report PATH` for a **new** directory; omit it for a fresh `out/run-…/` each time. |
 | Controller's local run | Its printed report path or **Export HTML** in the dashboard. Offline HTML shows a saved run, not a live flock. |
 
-In a build with [selectable report formats](README.md#choose-workload-report-formats),
-use `--format html` for only the offline dashboard or `--format json,junit`
+Choose [which report files to save](README.md#choose-workload-report-formats)
+with `--format html` for just the offline dashboard or `--format json,junit`
 for CI. To pipe a single document from a headless run, use `--stdout yaml`,
 `--stdout json` or `--stdout html`. Load a [once-per-case suite](README.md#run-every-case-and-check-its-answer)
-to see its individual assertions above the run settings. The published
-v0.3.0 predates these options.
+to see its individual assertions above the run settings.
 
 Reports are written when work finishes or drains. A bird that finished
 successfully can keep checking in without issuing any more requests. Stop

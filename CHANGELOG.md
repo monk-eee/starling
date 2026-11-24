@@ -6,6 +6,29 @@ versions are available from [GitHub Releases](https://github.com/monk-eee/starli
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-24
+
+### Added
+
+- [Run every case and check its answer](README.md#run-every-case-and-check-its-answer).
+  Set `run.mode: once` to run each configured case exactly once; an incomplete
+  suite cannot pass. Use `assert_match` to require all field rules to match
+  the same ranked result. The live dashboard, offline HTML and JSON/YAML
+  summaries show each case's expected result, verdict and last match rank.
+  Weighted sampling remains the default.
+- [Choose workload report formats](README.md#choose-workload-report-formats):
+  HTML, JSON, YAML, CSV or JUnit via `--format`, workload `report.formats`
+  or the dashboard. Headless `run` and `demo` can emit one document with
+  `--stdout`. Without a selection, Starling still saves the original seven
+  files. Finished live runs also offer individual downloads.
+
+### Fixed
+
+- Loading a YAML workload in the dashboard now confirms the filename and
+  run name. Rejected files show an error beside the input and leave the
+  current workload in place. YAML can also be pasted; neither action starts
+  the run.
+
 ## 0.3.0 - 2026-11-23
 
 ### Added
